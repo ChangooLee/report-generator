@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 AI 리포트 생성기</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .main-content {
+            padding: 40px;
+        }
+        
+        .input-section {
+            margin-bottom: 30px;
+        }
+        
+        .input-section label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .textarea-container {
+            position: relative;
+        }
+        
+        #query {
+            width: 100%;
+            min-height: 120px;
+            padding: 15px;
+            border: 2px solid #e1e8ed;
+            border-radius: 12px;
+            font-size: 16px;
+            font-family: inherit;
+            resize: vertical;
+            transition: border-color 0.3s ease;
+        }
+        
+        #query:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .char-count {
+            position: absolute;
+            bottom: 10px;
+            right: 15px;
+            font-size: 0.9em;
+            color: #666;
+            background: rgba(255,255,255,0.9);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        
+        .button-container {
+            text-align: center;
+            margin: 30px 0;
+        }
+        
+        #generateBtn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.1em;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        }
+        
+        #generateBtn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        
+        #generateBtn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .result-section {
+            margin-top: 30px;
+            padding: 20px;
+            border-radius: 12px;
+            display: none;
+        }
+        
+        .result-success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .result-error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .result-loading {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+        
+        .result-title {
+            font-weight: 600;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .report-link {
+            display: inline-block;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            padding: 12px 25px;
+            border-radius: 8px;
+            margin-top: 15px;
+            transition: background-color 0.3s ease;
+        }
+        
+        .report-link:hover {
+            background: #218838;
+        }
+        
+        .examples {
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 1px solid #e1e8ed;
+        }
+        
+        .examples h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .example-item {
+            background: #f8f9fa;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+            border-left: 4px solid #667eea;
+        }
+        
+        .example-item:hover {
+            background: #e9ecef;
+        }
+        
+        .api-links {
+            margin-top: 30px;
+            text-align: center;
+        }
+        
+        .api-links a {
+            display: inline-block;
+            margin: 0 10px;
+            padding: 8px 16px;
+            background: #6c757d;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9em;
+            transition: background-color 0.3s ease;
+        }
+        
+        .api-links a:hover {
+            background: #5a6268;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 12px;
+            }
+            
+            .header {
+                padding: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+            
+            #generateBtn {
+                width: 100%;
+                padding: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 AI 리포트 생성기</h1>
+            <p>자연어로 요청하면 AI가 인터랙티브 HTML 리포트를 생성합니다</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="input-section">
+                <label for="query">어떤 리포트를 생성하고 싶으신가요?</label>
+                <div class="textarea-container">
+                    <textarea 
+                        id="query" 
+                        placeholder="예: 지난 분기 매출 현황을 차트로 보여주세요"
+                        maxlength="1000"
+                    ></textarea>
+                    <div class="char-count">
+                        <span id="charCount">0</span>/1000
+                    </div>
+                </div>
+            </div>
+            
+            <div class="button-container">
+                <button id="generateBtn" onclick="generateReport()">
+                    리포트 생성하기
+                </button>
+            </div>
+            
+            <div id="result" class="result-section"></div>
+            
+            <div class="examples">
+                <h3>💡 예시 요청</h3>
+                <div class="example-item" onclick="setExample(this)">
+                    "월별 매출 추이를 선 그래프로 보여주세요"
+                </div>
+                <div class="example-item" onclick="setExample(this)">
+                    "고객 연령대별 구매 패턴을 분석해주세요"
+                </div>
+                <div class="example-item" onclick="setExample(this)">
+                    "제품 카테고리별 판매량을 파이 차트로 표현해주세요"
+                </div>
+                <div class="example-item" onclick="setExample(this)">
+                    "지역별 매출 현황을 대시보드로 만들어주세요"
+                </div>
+            </div>
+            
+            <div class="api-links">
+                <a href="/api/docs" target="_blank">📚 API 문서</a>
+                <a href="/reports/" target="_blank">📊 생성된 리포트</a>
+                <a href="/health" target="_blank">🔍 시스템 상태</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const queryTextarea = document.getElementById('query');
+        const charCountSpan = document.getElementById('charCount');
+        const generateBtn = document.getElementById('generateBtn');
+        const resultDiv = document.getElementById('result');
+        
+        // 문자 수 카운터
+        queryTextarea.addEventListener('input', function() {
+            const length = this.value.length;
+            charCountSpan.textContent = length;
+            
+            if (length > 950) {
+                charCountSpan.style.color = '#dc3545';
+            } else if (length > 800) {
+                charCountSpan.style.color = '#ffc107';
+            } else {
+                charCountSpan.style.color = '#666';
+            }
+        });
+        
+        // 예시 설정
+        function setExample(element) {
+            queryTextarea.value = element.textContent.replace(/"/g, '');
+            queryTextarea.dispatchEvent(new Event('input'));
+            queryTextarea.focus();
+        }
+        
+        // 리포트 생성
+        async function generateReport() {
+            const query = queryTextarea.value.trim();
+            
+            if (!query) {
+                showResult('error', '❌ 오류', '요청사항을 입력해주세요.');
+                return;
+            }
+            
+            // 로딩 시작
+            generateBtn.disabled = true;
+            generateBtn.innerHTML = '<span class="loading-spinner"></span>리포트 생성 중...';
+            showResult('loading', '🔄 생성 중', '리포트를 생성하고 있습니다. 잠시만 기다려주세요...');
+            
+            try {
+                const response = await fetch('/api/generate-report', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        user_query: query,
+                        session_id: 'web_' + Date.now()
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showResult('success', '✅ 생성 완료', 
+                        `리포트가 성공적으로 생성되었습니다!<br>
+                         처리 시간: ${result.processing_time?.toFixed(1)}초<br>
+                         <a href="${result.report_url}" target="_blank" class="report-link">리포트 보기</a>`
+                    );
+                } else {
+                    showResult('error', '❌ 생성 실패', result.error_message || '알 수 없는 오류가 발생했습니다.');
+                }
+                
+            } catch (error) {
+                showResult('error', '❌ 네트워크 오류', `서버와 통신하는 중 오류가 발생했습니다: ${error.message}`);
+            } finally {
+                // 로딩 종료
+                generateBtn.disabled = false;
+                generateBtn.innerHTML = '리포트 생성하기';
+            }
+        }
+        
+        function showResult(type, title, message) {
+            resultDiv.className = `result-section result-${type}`;
+            resultDiv.innerHTML = `
+                <div class="result-title">${title}</div>
+                <div>${message}</div>
+            `;
+            resultDiv.style.display = 'block';
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        
+        // Enter 키로 전송 (Ctrl+Enter)
+        queryTextarea.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                generateReport();
+            }
+        });
+    </script>
+</body>
+</html> 

@@ -1,0 +1,186 @@
+/* 리포트 기본 스타일 */
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f8f9fa;
+    line-height: 1.6;
+}
+
+.report-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    padding: 30px;
+}
+
+.report-title {
+    color: #2c3e50;
+    border-bottom: 3px solid #3498db;
+    padding-bottom: 15px;
+    margin-bottom: 30px;
+    font-size: 2.5em;
+    font-weight: 300;
+}
+
+.chart-container {
+    margin: 30px 0;
+    padding: 25px;
+    background: #fafafa;
+    border-radius: 8px;
+    border-left: 4px solid #3498db;
+}
+
+.chart-title {
+    font-size: 1.4em;
+    font-weight: 600;
+    color: #34495e;
+    margin-bottom: 20px;
+}
+
+.insight-box {
+    background: linear-gradient(135deg, #e8f5e8 0%, #f0f8f0 100%);
+    border: 1px solid #d4edda;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 25px 0;
+    border-left: 5px solid #28a745;
+}
+
+.insight-title {
+    font-weight: 600;
+    color: #155724;
+    font-size: 1.2em;
+    margin-bottom: 10px;
+}
+
+.metric-card {
+    display: inline-block;
+    background: white;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    padding: 25px;
+    margin: 15px;
+    min-width: 180px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    transition: transform 0.2s ease;
+}
+
+.metric-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.15);
+}
+
+.metric-value {
+    font-size: 2.5em;
+    font-weight: bold;
+    color: #2980b9;
+    margin-bottom: 8px;
+}
+
+.metric-label {
+    color: #7f8c8d;
+    font-size: 1.1em;
+    font-weight: 500;
+}
+
+.table-container {
+    overflow-x: auto;
+    margin: 25px 0;
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.data-table th {
+    background: #34495e;
+    color: white;
+    padding: 15px;
+    text-align: left;
+    font-weight: 600;
+}
+
+.data-table td {
+    padding: 12px 15px;
+    border-bottom: 1px solid #f1f2f6;
+}
+
+.data-table tr:hover {
+    background: #f8f9fa;
+}
+
+.summary-section {
+    background: #e3f2fd;
+    border-radius: 8px;
+    padding: 25px;
+    margin: 30px 0;
+    border-left: 5px solid #2196f3;
+}
+
+.footer {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 2px solid #e9ecef;
+    text-align: center;
+    color: #6c757d;
+    font-size: 0.9em;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+    .report-container {
+        padding: 20px;
+        margin: 10px;
+    }
+    
+    .metric-card {
+        display: block;
+        margin: 10px 0;
+        min-width: auto;
+    }
+    
+    .report-title {
+        font-size: 2em;
+    }
+    
+    .chart-container {
+        padding: 15px;
+    }
+}
+
+/* 차트 스타일 */
+canvas {
+    max-width: 100%;
+    height: auto;
+}
+
+/* 로딩 애니메이션 */
+.loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 200px;
+}
+
+.spinner {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #3498db;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

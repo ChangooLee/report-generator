@@ -1,0 +1,62 @@
+[
+    {
+        "month": "2024-01",
+        "sales": 1500000,
+        "orders": 150,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-02",
+        "sales": 1800000,
+        "orders": 180,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-03",
+        "sales": 2200000,
+        "orders": 220,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-04",
+        "sales": 1900000,
+        "orders": 190,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-05",
+        "sales": 2500000,
+        "orders": 250,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-06",
+        "sales": 2800000,
+        "orders": 280,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-07",
+        "sales": 3200000,
+        "orders": 320,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-08",
+        "sales": 2900000,
+        "orders": 290,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-09",
+        "sales": 3500000,
+        "orders": 350,
+        "product_category": "Electronics"
+    },
+    {
+        "month": "2024-10",
+        "sales": 3800000,
+        "orders": 380,
+        "product_category": "Electronics"
+    }
+] 

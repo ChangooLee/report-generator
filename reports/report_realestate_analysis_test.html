@@ -1,0 +1,59 @@
+
+    <!DOCTYPE html>
+    <html lang="ko">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>부동산 이동 분석 리포트</title>
+        <script src="/static/js/chart.min.js"></script>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            .chart-container { margin: 20px 0; padding: 20px; border: 1px solid #ddd; }
+            .summary { margin-bottom: 20px; }
+            .insights { margin-bottom: 20px; }
+            .conclusion { margin-bottom: 20px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>부동산 이동 분석 리포트</h1>
+            <div class="summary">
+                <h2>요약</h2>
+                <p>현재 여의도 자이 아파트를 월세로 주고 경기도 광주의 학군 좋은 지역으로 이동하려는 분석을 진행했습니다.</p>
+            </div>
+            <div class="insights">
+                <h2>주요 인사이트</h2>
+                <ul>
+                    <li>여의도 자이 아파트 월세 가격: 1000 만원</li>
+                    <li>광주 학군: 광주고등학교, 광주중학교</li>
+                    <li>광주 전세 평균 가격 (동일 또는 더 큰 평형): 4425.0 만원</li>
+                    <li>월간 수익: 3425.0 만원</li>
+                    <li>연간 수익: 41100.0 만원</li>
+                </ul>
+            </div>
+            <div class="chart-container">
+                <canvas id="priceChart"></canvas>
+            </div>
+            <div class="conclusion">
+                <h2>결론 및 권장사항</h2>
+                <p>광주의 학군 지역으로 이동하면 월간 3425.0 만원, 연간 41100.0 만원의 추가 수익을 얻을 수 있습니다. 학군 정보는 광주고등학교, 광주중학교로 확인되었습니다.</p>
+            </div>
+            <script>
+                var ctx = document.getElementById('priceChart').getContext('2d');
+                var priceChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {"labels": ["\uc6d4\uc138", "\uc804\uc138"], "datasets": [{"label": "\ud3c9\uade0 \uac00\uaca9 (\ub9cc\uc6d0)", "data": [1000, 4425.0], "backgroundColor": ["rgba(75, 192, 192, 0.2)", "rgba(153, 102, 255, 0.2)"], "borderColor": ["rgba(75, 192, 192, 1)", "rgba(153, 102, 255, 1)"], "borderWidth": 1}]},
+                    options: {
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            </script>
+        </div>
+    </body>
+    </html>
+    
