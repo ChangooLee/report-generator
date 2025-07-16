@@ -1,413 +1,450 @@
+"""
+Universal Report Generator Orchestrator
+범용 리포트 생성 오케스트레이터 - 클로드 데스크탑 스타일
+"""
+
 import asyncio
-import time
-import uuid
-import logging
-import re
 import json
-from typing import Dict, List, Optional, Any
-from .llm_client import OpenRouterClient, ModelType
-from .mcp_client import MCPClient
-from .code_executor import CodeExecutor
-from .utils.templates import PromptTemplates
-from .utils.security import SecurityValidator
+import logging
+import os
+import tempfile
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+
+from app.llm_client import OpenRouterClient
+from app.mcp_client import MCPClient
+from app.code_executor import CodeExecutor
+from app.utils.security import SecurityValidator
+from app.strategic_reporter import StrategicReporter, StrategicReportConfig, ReportStyle, InsightLevel
+from app.data_adapters import DataSourceManager
+from app.universal_workflow import UniversalAgenticWorkflow
+
+# 기존 워크플로우 (백업용)
+try:
+    from app.workflow_v2 import AgenticWorkflow
+    LEGACY_WORKFLOW_AVAILABLE = True
+except ImportError:
+    LEGACY_WORKFLOW_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-class ReportOrchestrator:
-    def __init__(self, llm_client: OpenRouterClient, mcp_client: MCPClient):
-        self.llm_client = llm_client
-        self.mcp_client = mcp_client
+
+class UniversalOrchestrator:
+    """범용 리포트 생성 오케스트레이터"""
+    
+    def __init__(self):
+        self.llm_client = OpenRouterClient()
+        self.mcp_client = MCPClient()
         self.code_executor = CodeExecutor()
-        self.prompt_templates = PromptTemplates()
         self.security_validator = SecurityValidator()
         
-    async def process_request(
-        self, 
-        user_query: str, 
-        session_id: Optional[str] = None,
+        # 새로운 범용 시스템
+        self.strategic_reporter = StrategicReporter()
+        self.data_manager = DataSourceManager()
+        self.universal_workflow = UniversalAgenticWorkflow(self.llm_client)
+        
+        # 레거시 워크플로우 (fallback)
+        if LEGACY_WORKFLOW_AVAILABLE:
+            self.legacy_workflow = AgenticWorkflow(self.llm_client)
+        else:
+            self.legacy_workflow = None
+        
+        logger.info("🚀 Universal Orchestrator 초기화 완료")
+    
+    async def generate_report(
+        self,
+        user_query: str,
+        session_id: str,
         data_sources: Optional[List[str]] = None,
-        mcp_tools: Optional[List[str]] = None
+        report_style: str = "executive",
+        insight_level: str = "intermediate",
+        use_legacy: bool = False
     ) -> Dict[str, Any]:
-        """메인 처리 로직"""
-        start_time = time.time()
+        """
+        범용 리포트 생성
+        
+        Args:
+            user_query: 사용자 질문
+            session_id: 세션 ID
+            data_sources: 데이터 소스 목록
+            report_style: 리포트 스타일 (executive, analytical, presentation, dashboard, narrative)
+            insight_level: 인사이트 수준 (basic, intermediate, advanced)
+            use_legacy: 레거시 시스템 사용 여부
+        """
+        
+        start_time = datetime.now()
         
         try:
-            # 1. 입력 검증
-            if not self.security_validator.validate_user_query(user_query):
-                return {
-                    "success": False,
-                    "error_message": "유효하지 않은 요청입니다.",
-                    "processing_time": time.time() - start_time
+            logger.info(f"📊 범용 리포트 생성 시작 - Session: {session_id}")
+            logger.info(f"   스타일: {report_style}, 인사이트 수준: {insight_level}")
+            
+            # 1. 데이터 수집
+            context_data = await self._collect_data(data_sources, user_query)
+            
+            # 2. 컨텍스트 파일 생성
+            context_file = await self._create_context_file(context_data, session_id)
+            
+            # 3. 리포트 생성 방식 선택
+            if use_legacy and self.legacy_workflow:
+                logger.info("🔄 레거시 워크플로우 사용")
+                result = await self._generate_legacy_report(
+                    user_query, context_data, session_id
+                )
+            else:
+                logger.info("✨ 새로운 전략적 리포트 시스템 사용")
+                result = await self._generate_strategic_report(
+                    user_query, context_data, session_id, report_style, insight_level
+                )
+            
+            # 4. 처리 시간 계산
+            processing_time = (datetime.now() - start_time).total_seconds()
+            result["processing_time"] = processing_time
+            
+            # 5. 결과 정리
+            if result.get("success"):
+                logger.info(f"✅ 리포트 생성 완료: {result.get('report_path')}")
+                logger.info(f"   처리 시간: {processing_time:.2f}초")
+            else:
+                logger.error(f"❌ 리포트 생성 실패: {result.get('error')}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ 오케스트레이터 오류: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "report_path": None,
+                "processing_time": (datetime.now() - start_time).total_seconds()
+            }
+    
+    async def _collect_data(
+        self, 
+        data_sources: Optional[List[str]], 
+        user_query: str
+    ) -> Dict[str, Any]:
+        """데이터 수집"""
+        
+        context_data = {}
+        
+        if not data_sources:
+            # 기본 샘플 데이터 사용
+            context_data["main_data"] = self._get_sample_data()
+            context_data["source"] = "sample_data"
+            logger.info("📦 샘플 데이터 사용")
+        else:
+            # 실제 데이터 소스에서 수집
+            for source in data_sources:
+                try:
+                    if source.startswith("mcp_"):
+                        # MCP 데이터 수집
+                        mcp_data = await self._collect_mcp_data(source, user_query)
+                        context_data.update(mcp_data)
+                    else:
+                        # 파일 데이터 수집
+                        file_data = await self._collect_file_data(source)
+                        context_data.update(file_data)
+                        
+                except Exception as e:
+                    logger.warning(f"데이터 소스 {source} 수집 실패: {e}")
+                    continue
+        
+        # 데이터 검증 및 전처리
+        processed_data = self.data_manager.process_data(context_data)
+        
+        return {
+            "main_data": processed_data.main_data,
+            "metadata": {
+                "total_records": processed_data.metadata.total_records,
+                "columns": processed_data.metadata.columns,
+                "data_types": processed_data.metadata.data_types,
+                "quality_score": processed_data.metadata.quality_score,
+                "source_type": processed_data.metadata.source_type.value
+            },
+            "summary": processed_data.summary,
+            "processing_notes": processed_data.processing_notes
+        }
+    
+    async def _collect_mcp_data(self, source: str, user_query: str) -> Dict[str, Any]:
+        """MCP 데이터 수집"""
+        
+        try:
+            if "realestate" in source:
+                # 부동산 데이터 수집
+                result = await self.mcp_client.get_realestate_data(
+                    region="전국", 
+                    property_type="아파트"
+                )
+                return {"mcp_realestate": result}
+            else:
+                # 기본 MCP 데이터
+                result = await self.mcp_client.execute_tool(source, {"query": user_query})
+                return {"mcp_data": result}
+                
+        except Exception as e:
+            logger.warning(f"MCP 데이터 수집 실패: {e}")
+            return {}
+    
+    async def _collect_file_data(self, source: str) -> Dict[str, Any]:
+        """파일 데이터 수집"""
+        
+        try:
+            data_path = f"./data/{source}"
+            if os.path.exists(data_path):
+                with open(data_path, 'r', encoding='utf-8') as f:
+                    if source.endswith('.json'):
+                        return {"file_data": json.load(f)}
+                    else:
+                        return {"file_data": f.read()}
+            else:
+                logger.warning(f"파일을 찾을 수 없음: {data_path}")
+                return {}
+                
+        except Exception as e:
+            logger.warning(f"파일 데이터 수집 실패: {e}")
+            return {}
+    
+    def _get_sample_data(self) -> List[Dict[str, Any]]:
+        """샘플 데이터 생성"""
+        
+        import random
+        from datetime import datetime, timedelta
+        
+        # 다양한 산업/비즈니스 도메인의 샘플 데이터
+        sample_data = []
+        
+        categories = ["Technology", "Healthcare", "Finance", "Retail", "Manufacturing"]
+        regions = ["North", "South", "East", "West", "Central"]
+        
+        base_date = datetime.now() - timedelta(days=365)
+        
+        for i in range(50):
+            record = {
+                "id": i + 1,
+                "category": random.choice(categories),
+                "region": random.choice(regions),
+                "revenue": round(random.uniform(10000, 100000), 2),
+                "units_sold": random.randint(10, 1000),
+                "customer_satisfaction": round(random.uniform(3.0, 5.0), 1),
+                "date": (base_date + timedelta(days=random.randint(0, 365))).strftime("%Y-%m-%d"),
+                "growth_rate": round(random.uniform(-10, 25), 1),
+                "market_share": round(random.uniform(5, 30), 1),
+                "employee_count": random.randint(10, 500)
+            }
+            sample_data.append(record)
+        
+        return sample_data
+    
+    async def _create_context_file(
+        self, 
+        context_data: Dict[str, Any], 
+        session_id: str
+    ) -> str:
+        """컨텍스트 파일 생성"""
+        
+        context_file = f"/tmp/context_{session_id}.json"
+        
+        with open(context_file, 'w', encoding='utf-8') as f:
+            json.dump(context_data, f, ensure_ascii=False, indent=2, default=str)
+        
+        logger.info(f"📄 컨텍스트 파일 생성: {context_file}")
+        return context_file
+    
+    async def _generate_strategic_report(
+        self,
+        user_query: str,
+        context_data: Dict[str, Any],
+        session_id: str,
+        report_style: str,
+        insight_level: str
+    ) -> Dict[str, Any]:
+        """새로운 전략적 리포트 생성"""
+        
+        try:
+            # 리포트 설정 생성
+            config = StrategicReportConfig(
+                title=self._generate_report_title(user_query),
+                style=ReportStyle(report_style),
+                insight_level=InsightLevel(insight_level),
+                color_theme="professional",
+                include_recommendations=True,
+                include_methodology=insight_level == "advanced"
+            )
+            
+            # 전략적 리포트 생성
+            result = await self.strategic_reporter.generate_strategic_report(
+                user_query=user_query,
+                data=context_data,
+                config=config,
+                session_id=session_id
+            )
+            
+            # 결과 보강
+            if result.get("success"):
+                # 리포트 URL 생성
+                report_url = f"/reports/strategic_report_{session_id}.html"
+                result["report_url"] = report_url
+                
+                # 추가 메타데이터
+                result["report_type"] = "strategic"
+                result["config"] = {
+                    "style": config.style.value,
+                    "insight_level": config.insight_level.value,
+                    "color_theme": config.color_theme
                 }
             
-            # 2. 세션 ID 생성
-            if not session_id:
-                session_id = str(uuid.uuid4())
+            return result
             
-            logger.info(f"리포트 생성 시작 - 세션: {session_id}")
+        except Exception as e:
+            logger.error(f"전략적 리포트 생성 실패: {e}")
             
-            # 3. MCP 데이터 수집
-            context_data = await self._collect_mcp_data(user_query, mcp_tools)
-            
-            # 4. 프롬프트 생성
-            prompt = self.prompt_templates.build_generation_prompt(
+            # Universal Workflow로 fallback
+            logger.info("🔄 Universal Workflow로 fallback")
+            return await self._generate_universal_workflow_report(
+                user_query, context_data, session_id
+            )
+    
+    async def _generate_universal_workflow_report(
+        self,
+        user_query: str,
+        context_data: Dict[str, Any],
+        session_id: str
+    ) -> Dict[str, Any]:
+        """범용 워크플로우 리포트 생성"""
+        
+        try:
+            result = await self.universal_workflow.execute_workflow(
                 user_query=user_query,
                 context_data=context_data,
                 session_id=session_id
             )
             
-            # 5. 코드 생성 (Qwen 사용)
-            llm_response = await self.llm_client.generate_code(
-                prompt=prompt,
-                model_type=ModelType.QWEN_CODER,
-                max_tokens=4000,
-                temperature=0.1
+            if result.get("success"):
+                # 생성된 코드 실행
+                execution_result = await self._execute_generated_code(
+                    result.get("generated_code", ""), session_id
+                )
+                
+                if execution_result.get("success"):
+                    result["report_url"] = f"/reports/report_{session_id}.html"
+                    result["report_type"] = "universal_workflow"
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Universal Workflow 실패: {e}")
+            
+            # 마지막 수단: 레거시 워크플로우
+            if self.legacy_workflow:
+                return await self._generate_legacy_report(user_query, context_data, session_id)
+            else:
+                return {
+                    "success": False,
+                    "error": "모든 리포트 생성 방법이 실패했습니다.",
+                    "report_path": None
+                }
+    
+    async def _generate_legacy_report(
+        self,
+        user_query: str,
+        context_data: Dict[str, Any],
+        session_id: str
+    ) -> Dict[str, Any]:
+        """레거시 워크플로우 리포트 생성"""
+        
+        try:
+            if not self.legacy_workflow:
+                raise Exception("레거시 워크플로우를 사용할 수 없습니다.")
+            
+            result = await self.legacy_workflow.execute_workflow(
+                user_query=user_query,
+                context_data=context_data,
+                session_id=session_id
             )
             
-            # 6. 코드 추출
-            logger.info(f"LLM 응답 받음 - 세션: {session_id}, 응답 길이: {len(llm_response)}")
-            logger.info(f"LLM 응답 미리보기 (처음 500자):\n{llm_response[:500]}...")
-            
-            # LLM 응답을 파일로 저장 (디버깅용)
-            try:
-                with open(f"/tmp/llm_response_{session_id}.txt", "w", encoding="utf-8") as f:
-                    f.write(llm_response)
-                logger.info(f"LLM 응답을 파일로 저장: /tmp/llm_response_{session_id}.txt")
-            except Exception as e:
-                logger.warning(f"LLM 응답 파일 저장 실패: {e}")
-            
-            extracted_code = self._extract_code_blocks(llm_response)
-            
-            # 추출된 코드를 파일로 저장 (디버깅용)
-            try:
-                with open(f"/tmp/extracted_code_{session_id}.json", "w", encoding="utf-8") as f:
-                    json.dump(extracted_code, f, ensure_ascii=False, indent=2)
-                logger.info(f"추출된 코드를 파일로 저장: /tmp/extracted_code_{session_id}.json")
-            except Exception as e:
-                logger.warning(f"추출된 코드 파일 저장 실패: {e}")
-            
-            # 7. 코드 실행
-            logger.info(f"추출된 코드 확인 - 세션: {session_id}")
-            logger.info(f"Python 코드 존재: {extracted_code.get('python_code') is not None}")
-            logger.info(f"HTML 코드 존재: {extracted_code.get('html_code') is not None}")
-            logger.info(f"JavaScript 코드 존재: {extracted_code.get('javascript_code') is not None}")
-            
-            if extracted_code.get('python_code'):
-                logger.info(f"Python 코드 (처음 300자):\n{extracted_code['python_code'][:300]}...")
-            else:
-                logger.warning(f"Python 코드가 추출되지 않았습니다!")
-                logger.info(f"전체 응답:\n{llm_response}")
-            
-            try:
-                logger.info(f"코드 실행기 호출 시작 - 세션: {session_id}")
-                logger.info(f"전달할 컨텍스트 데이터: {type(context_data)}, 키: {list(context_data.keys()) if isinstance(context_data, dict) else 'N/A'}")
-                
-                execution_result = await self.code_executor.execute_code(
-                    code=extracted_code,
-                    session_id=session_id,
-                    context_data=context_data
+            if result.get("success"):
+                # 생성된 코드 실행
+                execution_result = await self._execute_generated_code(
+                    result.get("generated_code", ""), session_id
                 )
                 
-                logger.info(f"코드 실행기 호출 완료 - 세션: {session_id}")
-                logger.info(f"실행 결과: success={execution_result.get('success')}")
-                if not execution_result.get('success'):
-                    logger.error(f"실행 실패 이유: {execution_result.get('error', 'Unknown')}")
-                    
-            except Exception as executor_error:
-                logger.error(f"코드 실행기 호출 중 예외 발생 - 세션: {session_id}")
-                logger.error(f"예외 타입: {type(executor_error).__name__}")
-                logger.error(f"예외 메시지: {str(executor_error)}")
-                logger.error(f"예외 repr: {repr(executor_error)}")
-                import traceback
-                logger.error(f"예외 스택 트레이스:\n{traceback.format_exc()}")
+                if execution_result.get("success"):
+                    result["report_url"] = f"/reports/report_{session_id}.html"
+                    result["report_type"] = "legacy"
                 
-                execution_result = {
-                    "success": False,
-                    "error": f"코드 실행기 호출 실패: {str(executor_error)}",
-                    "output": ""
-                }
+            return result
             
-            # 8. 결과 처리
-            if execution_result["success"]:
-                report_url = f"/reports/{execution_result['report_filename']}"
-                return {
-                    "success": True,
-                    "report_url": report_url,
-                    "session_id": session_id,
-                    "processing_time": time.time() - start_time
-                }
-            else:
-                # 9. 오류 시 Claude로 수정 시도
-                return await self._handle_execution_error(
-                    llm_response, execution_result, user_query, context_data, session_id, start_time
-                )
-                
         except Exception as e:
-            logger.error(f"리포트 생성 중 오류 발생: {e}")
+            logger.error(f"레거시 워크플로우 실패: {e}")
             return {
                 "success": False,
-                "error_message": f"리포트 생성 중 오류가 발생했습니다: {str(e)}",
-                "session_id": session_id,
-                "processing_time": time.time() - start_time
+                "error": str(e),
+                "report_path": None
             }
     
-    async def _collect_mcp_data(self, user_query: str, mcp_tools: Optional[List[str]] = None) -> Dict[str, Any]:
-        """MCP 서버에서 데이터를 수집합니다."""
-        context_data = {
-            "_metadata": {
-                "query": user_query,
-                "collected_at": time.time(),
-                "sources": []
+    async def _execute_generated_code(self, code: str, session_id: str) -> Dict[str, Any]:
+        """생성된 코드 실행"""
+        
+        try:
+            # 보안 검증
+            security_result = self.security_validator.validate_code(code)
+            if not security_result.get("is_safe", False):
+                return {
+                    "success": False,
+                    "error": f"보안 검증 실패: {security_result.get('issues', [])}"
+                }
+            
+            # 코드 실행
+            context_file = f"/tmp/context_{session_id}.json"
+            execution_result = await self.code_executor.execute_python_code(
+                code, session_id, context_file
+            )
+            
+            return execution_result
+            
+        except Exception as e:
+            logger.error(f"코드 실행 실패: {e}")
+            return {
+                "success": False,
+                "error": str(e)
             }
-        }
-        
-        try:
-            # 사용 가능한 서버 목록 조회
-            server_status = self.mcp_client.get_server_status()
-            
-            for server_name, is_active in server_status.items():
-                if not is_active:
-                    continue
-                    
-                try:
-                    # 서버의 도구 목록 조회
-                    available_tools = await self.mcp_client.list_tools(server_name)
-                    
-                    if mcp_tools:
-                        # 특정 도구만 사용
-                        tools_to_use = [t for t in available_tools if t.get("name") in mcp_tools]
-                    else:
-                        # 자동으로 적절한 도구 선택
-                        tools_to_use = self._select_relevant_tools(user_query, available_tools)
-                    
-                    # 선택된 도구 실행
-                    for tool in tools_to_use:
-                        tool_name = tool.get("name")
-                        if not tool_name:
-                            continue
-                            
-                        tool_args = self._generate_tool_arguments(user_query, tool)
-                        
-                        result = await self.mcp_client.call_tool(server_name, tool_name, tool_args)
-                        
-                        if result:
-                            context_data[f"{server_name}_{tool_name}"] = result
-                            context_data["_metadata"]["sources"].append({
-                                "server": server_name,
-                                "tool": tool_name,
-                                "args": tool_args
-                            })
-                            
-                except Exception as e:
-                    logger.warning(f"MCP 서버 {server_name} 데이터 수집 실패: {e}")
-                    
-        except Exception as e:
-            logger.error(f"MCP 데이터 수집 중 오류: {e}")
-            
-        return context_data
     
-    def _select_relevant_tools(self, user_query: str, available_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """사용자 쿼리와 관련된 도구를 선택합니다."""
-        query_lower = user_query.lower()
-        relevant_tools = []
+    def _generate_report_title(self, user_query: str) -> str:
+        """사용자 쿼리에서 리포트 제목 생성"""
         
-        # 키워드 기반 매칭
-        keyword_mapping = {
-            "file": ["read", "list", "search", "find"],
-            "data": ["read", "query", "search", "get"],
-            "database": ["query", "select", "find"],
-            "web": ["scrape", "fetch", "get"],
-            "api": ["call", "get", "post", "fetch"]
-        }
+        # 키워드 기반 제목 생성
+        keywords = user_query.lower().split()
         
-        for tool in available_tools:
-            tool_name = tool.get("name", "").lower()
-            tool_description = tool.get("description", "").lower()
-            
-            # 키워드 매칭으로 관련 도구 찾기
-            for keyword, actions in keyword_mapping.items():
-                if keyword in query_lower:
-                    if any(action in tool_name or action in tool_description for action in actions):
-                        relevant_tools.append(tool)
-                        break
-        
-        # 관련 도구가 없으면 기본 도구 사용
-        if not relevant_tools and available_tools:
-            relevant_tools = available_tools[:2]  # 처음 2개 도구만 사용
-            
-        return relevant_tools
+        if any(word in keywords for word in ["분석", "analysis", "데이터"]):
+            return "데이터 분석 리포트"
+        elif any(word in keywords for word in ["트렌드", "trend", "추세"]):
+            return "트렌드 분석 리포트"
+        elif any(word in keywords for word in ["성과", "performance", "실적"]):
+            return "성과 분석 리포트"
+        elif any(word in keywords for word in ["비교", "compare", "comparison"]):
+            return "비교 분석 리포트"
+        elif any(word in keywords for word in ["예측", "forecast", "predict"]):
+            return "예측 분석 리포트"
+        else:
+            return "종합 분석 리포트"
     
-    def _generate_tool_arguments(self, user_query: str, tool_definition: Dict[str, Any]) -> Dict[str, Any]:
-        """도구 호출을 위한 인수를 생성합니다."""
-        args = {}
-        
-        # 도구 스키마에서 필수 인수 추출
-        input_schema = tool_definition.get("inputSchema", {})
-        properties = input_schema.get("properties", {})
-        
-        for prop_name, prop_def in properties.items():
-            prop_type = prop_def.get("type", "string")
-            
-            # 사용자 쿼리에서 인수 추출 시도
-            if prop_name in ["query", "search", "term"]:
-                args[prop_name] = user_query
-            elif prop_name in ["path", "directory"]:
-                args[prop_name] = "/app/data"  # 기본 경로
-            elif prop_name in ["limit", "max_results"]:
-                args[prop_name] = 10  # 기본 제한
-            elif prop_def.get("default") is not None:
-                args[prop_name] = prop_def["default"]
-                
-        return args
+    def get_available_styles(self) -> List[str]:
+        """사용 가능한 리포트 스타일 목록"""
+        return [style.value for style in ReportStyle]
     
-    def _extract_code_blocks(self, llm_response: str) -> Dict[str, Any]:
-        """LLM 응답에서 코드 블록을 추출합니다."""
-        
-        # Python 코드 블록 추출
-        python_pattern = r'```python\n(.*?)\n```'
-        python_matches = re.findall(python_pattern, llm_response, re.DOTALL)
-        
-        # HTML 코드 블록 추출
-        html_pattern = r'```html\n(.*?)\n```'
-        html_matches = re.findall(html_pattern, llm_response, re.DOTALL)
-        
-        # JavaScript 코드 블록 추출
-        js_pattern = r'```javascript\n(.*?)\n```'
-        js_matches = re.findall(js_pattern, llm_response, re.DOTALL)
+    def get_available_insight_levels(self) -> List[str]:
+        """사용 가능한 인사이트 수준 목록"""
+        return [level.value for level in InsightLevel]
+    
+    def get_system_status(self) -> Dict[str, Any]:
+        """시스템 상태 확인"""
         
         return {
-            "python_code": python_matches[0] if python_matches else None,
-            "html_code": html_matches[0] if html_matches else None,
-            "javascript_code": js_matches[0] if js_matches else None,
-            "explanation": self._extract_explanation(llm_response),
-            "full_response": llm_response
-        }
-    
-    def _extract_explanation(self, llm_response: str) -> str:
-        """LLM 응답에서 설명 텍스트를 추출합니다."""
-        # 코드 블록이 아닌 부분을 설명으로 간주
-        explanation = re.sub(r'```.*?```', '', llm_response, flags=re.DOTALL)
-        return explanation.strip()
-    
-    async def _handle_execution_error(
-        self, 
-        original_response: str, 
-        error_result: Dict[str, Any], 
-        user_query: str, 
-        context_data: Dict[str, Any], 
-        session_id: str,
-        start_time: float
-    ) -> Dict[str, Any]:
-        """코드 실행 오류 시 Claude를 사용하여 수정을 시도합니다."""
-        
-        logger.info(f"코드 실행 실패, Claude로 수정 시도 - 세션: {session_id}")
-        
-        try:
-            # Claude를 사용하여 코드 수정
-            fixed_response = await self.llm_client.analyze_and_fix_code(
-                original_code=original_response,
-                error_message=error_result.get("error_message", ""),
-                user_query=user_query
-            )
-            
-            # 수정된 코드 추출
-            fixed_code = self._extract_code_blocks(fixed_response)
-            
-            # 수정된 코드 실행
-            execution_result = await self.code_executor.execute_code(
-                code=fixed_code,
-                session_id=session_id,
-                context_data=context_data
-            )
-            
-            if execution_result["success"]:
-                report_url = f"/reports/{execution_result['report_filename']}"
-                return {
-                    "success": True,
-                    "report_url": report_url,
-                    "session_id": session_id,
-                    "processing_time": time.time() - start_time,
-                    "fixed_by_claude": True
-                }
-                
-        except Exception as e:
-            logger.error(f"Claude 코드 수정 실패: {e}")
-            
-        return {
-            "success": False,
-            "error_message": "코드 실행에 실패했습니다. 요청을 다시 시도해주세요.",
-            "session_id": session_id,
-            "processing_time": time.time() - start_time,
-            "original_error": error_result.get("error_message", ""),
-            "logs": error_result.get("logs", "")
-        }
-    
-    async def get_available_data_sources(self) -> List[Dict[str, Any]]:
-        """사용 가능한 데이터 소스 목록을 반환합니다."""
-        sources = []
-        
-        try:
-            server_status = self.mcp_client.get_server_status()
-            
-            for server_name, is_active in server_status.items():
-                if not is_active:
-                    continue
-                    
-                try:
-                    tools = await self.mcp_client.list_tools(server_name)
-                    
-                    sources.append({
-                        "name": server_name,
-                        "description": f"MCP 서버: {server_name}",
-                        "available_tools": [tool.get("name") for tool in tools],
-                        "status": "active" if is_active else "inactive"
-                    })
-                    
-                except Exception as e:
-                    logger.warning(f"서버 {server_name} 도구 목록 조회 실패: {e}")
-                    
-        except Exception as e:
-            logger.error(f"데이터 소스 목록 조회 실패: {e}")
-            
-        return sources
-    
-    async def enhance_report(self, session_id: str, user_feedback: str) -> Dict[str, Any]:
-        """사용자 피드백을 바탕으로 리포트를 개선합니다."""
-        
-        start_time = time.time()
-        
-        try:
-            # 기존 리포트 내용 읽기 (구현 필요)
-            # 여기서는 간단히 새로운 리포트 생성
-            
-            enhanced_response = await self.llm_client.enhance_report(
-                basic_report="기존 리포트 내용",  # 실제로는 파일에서 읽어야 함
-                user_feedback=user_feedback
-            )
-            
-            # 개선된 코드 추출 및 실행
-            enhanced_code = self._extract_code_blocks(enhanced_response)
-            
-            execution_result = await self.code_executor.execute_code(
-                code=enhanced_code,
-                session_id=f"{session_id}_enhanced",
-                context_data={}
-            )
-            
-            if execution_result["success"]:
-                report_url = f"/reports/{execution_result['report_filename']}"
-                return {
-                    "success": True,
-                    "report_url": report_url,
-                    "session_id": f"{session_id}_enhanced",
-                    "processing_time": time.time() - start_time
-                }
-                
-        except Exception as e:
-            logger.error(f"리포트 개선 실패: {e}")
-            
-        return {
-            "success": False,
-            "error_message": "리포트 개선에 실패했습니다.",
-            "processing_time": time.time() - start_time
+            "strategic_reporter": "available",
+            "universal_workflow": "available",
+            "legacy_workflow": "available" if self.legacy_workflow else "unavailable",
+            "data_manager": "available",
+            "supported_styles": self.get_available_styles(),
+            "supported_insight_levels": self.get_available_insight_levels(),
+            "version": "2.0.0"
         } 

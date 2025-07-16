@@ -1,0 +1,37 @@
+{
+  "timestamp": "2025-07-16T16:33:39.136916",
+  "total_tests": 4,
+  "successful_tests": 2,
+  "success_rate": 50.0,
+  "total_time": 0.043042,
+  "results": [
+    {
+      "scenario": "Executive Summary Report",
+      "success": true,
+      "processing_time": 0.007827,
+      "report_type": "strategic",
+      "error": null
+    },
+    {
+      "scenario": "Data Analysis Report",
+      "success": false,
+      "processing_time": 0.007581,
+      "report_type": "unknown",
+      "error": "list index out of range"
+    },
+    {
+      "scenario": "Presentation Report",
+      "success": false,
+      "processing_time": 0.012114,
+      "report_type": "unknown",
+      "error": "list index out of range"
+    },
+    {
+      "scenario": "Dashboard Report",
+      "success": true,
+      "processing_time": 0.011425,
+      "report_type": "strategic",
+      "error": null
+    }
+  ]
+}
