@@ -58,7 +58,12 @@ class OpenRouterClient:
         }
         
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            # SSL 최적화된 클라이언트 설정
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+                verify=True,
+                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            ) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     json=payload,

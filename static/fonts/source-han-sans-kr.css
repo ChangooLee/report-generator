@@ -1,0 +1,28 @@
+@font-face {
+  font-family: 'Source Han Sans KR';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('./source-han-sans-kr-300.otf') format('opentype');
+}
+@font-face {
+  font-family: 'Source Han Sans KR';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./source-han-sans-kr-400.otf') format('opentype');
+}
+@font-face {
+  font-family: 'Source Han Sans KR';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./source-han-sans-kr-500.otf') format('opentype');
+}
+@font-face {
+  font-family: 'Source Han Sans KR';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./source-han-sans-kr-700.otf') format('opentype');
+} 

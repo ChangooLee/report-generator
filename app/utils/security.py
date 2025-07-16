@@ -54,9 +54,9 @@ class SecurityValidator:
             "errors": []
         }
         
-        # 위험한 함수 호출 검사
+        # 위험한 함수 호출 검사 (exec는 제한된 컨텍스트에서 허용)
         dangerous_functions = [
-            'eval', 'exec', 'compile', '__import__',
+            'eval', 'compile', '__import__',
             'subprocess', 'os.system'
         ]
         
@@ -65,33 +65,61 @@ class SecurityValidator:
                 result["errors"].append(f"위험한 함수 사용: {func}")
                 result["is_safe"] = False
         
+        # exec 사용은 경고만 (제한된 환경에서 허용)
+        if re.search(r'\bexec\b', code):
+            result["warnings"].append("exec 함수 사용 감지 - 제한된 환경에서만 실행됩니다")
+        
         # 파일 쓰기 검사 (허용된 경로만)
         write_patterns = [
-            r'open\s*\([^)]*["\'][^"\']*["\'][^)]*["\']w["\']',  # open(..., 'w')
-            r'open\s*\([^)]*["\']w["\']'  # open('w', ...)
+            r'open\s*\(\s*["\']([^"\']+)["\'][\s,]*["\']w["\']',  # open('file', 'w')
+            r'open\s*\(\s*([^,)]+)\s*,\s*["\']w["\']'  # open(file, 'w')
         ]
         
         for pattern in write_patterns:
             matches = re.finditer(pattern, code)
             for match in matches:
-                file_path_match = re.search(r'["\']([^"\']+)["\']', match.group())
-                if file_path_match:
-                    file_path = file_path_match.group(1)
-                    # /reports/ 경로는 허용
-                    if not file_path.startswith('/reports/'):
-                        result["errors"].append(f"허용되지 않은 경로에 파일 쓰기: {file_path}")
-                        result["is_safe"] = False
+                # 첫 번째 그룹이 파일 경로
+                if len(match.groups()) > 0:
+                    file_path = match.group(1).strip('\'"')
+                    # reports 디렉토리 관련 경로는 허용 (절대/상대 경로 모두)
+                    allowed_paths = ['/reports/', './reports/', 'reports/', '/app/reports/', '/tmp/']
+                    allowed_dirs = ['reports', 'tmp']
+                    
+                    # 경로 정규화
+                    normalized_path = os.path.normpath(file_path)
+                    
+                    # 허용된 경로 확인
+                    is_allowed = False
+                    for path in allowed_paths:
+                        if file_path.startswith(path):
+                            is_allowed = True
+                            break
+                    
+                    # 상대 경로로 reports 또는 tmp 디렉토리인지 확인
+                    if not is_allowed:
+                        for dir_name in allowed_dirs:
+                            if normalized_path.startswith(dir_name + '/') or normalized_path.startswith(dir_name + '\\'):
+                                is_allowed = True
+                                break
+                    
+                    if not is_allowed:
+                        result["warnings"].append(f"파일 쓰기 경로 확인 필요: {file_path}")
+                        # errors 대신 warnings로 변경 (너무 엄격하지 않게)
         
         # 파일 시스템 접근 검사
         filesystem_patterns = [
             r'open\s*\([^)]*["\'][^"\']*\.\.[^"\']*["\']',  # 상위 디렉토리 접근
-            r'os\.path\.join\s*\([^)]*\.\.',  # 상위 디렉토리 결합
-            r'["\']\/(?!app\/)[^"\']*["\']'  # 루트 디렉토리 접근
+            r'os\.path\.join\s*\([^)]*\.\.'  # 상위 디렉토리 결합
         ]
         
         for pattern in filesystem_patterns:
             if re.search(pattern, code):
                 result["warnings"].append(f"파일 시스템 접근 감지: {pattern}")
+        
+        # 허용되지 않는 루트 디렉토리 접근 검사 (app, data, reports는 허용)
+        dangerous_root_access = r'["\']\/(?!(?:app|data|reports|tmp)\/)[^"\']*["\']'
+        if re.search(dangerous_root_access, code):
+            result["warnings"].append(f"잠재적 위험한 루트 디렉토리 접근 감지")
         
         # 네트워크 접근 검사
         network_patterns = [

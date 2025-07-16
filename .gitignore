@@ -1,0 +1,121 @@
+# 환경변수 및 비밀 정보
+.env
+.env.local
+.env.production
+.env.staging
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 가상환경
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE 및 에디터
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# 운영체제
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 로그 파일
+*.log
+logs/
+log/
+
+# 생성된 리포트 (보안상 제외)
+reports/*.html
+reports/*.pdf
+reports/*.json
+!reports/.gitkeep
+
+# 임시 파일
+/tmp/
+temp/
+*.tmp
+*.temp
+
+# 데이터베이스
+*.db
+*.sqlite
+*.sqlite3
+
+# 캐시
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# FastAPI 관련
+.pytest_cache/
+
+# MCP 서버 관련
+mcp_servers/*.log
+
+# Docker 관련
+docker-compose.override.yml
+
+# 백업 파일
+*.bak
+*.backup
+
+# 압축 파일
+*.zip
+*.tar.gz
+*.rar
+
+# 민감한 설정 파일
+config/local.yaml
+config/production.yaml
+secrets/
+
+# 테스트 출력
+test_output/
+coverage.xml
+
+# 빌드 아티팩트
+dist/
+build/ 

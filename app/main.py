@@ -6,9 +6,13 @@ import uvicorn
 import os
 import logging
 from typing import Optional, List, Dict, Any
+from dotenv import load_dotenv
 from .orchestrator import ReportOrchestrator
 from .llm_client import OpenRouterClient
 from .mcp_client import MCPClient
+
+# .env 파일 로드
+load_dotenv()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -75,7 +79,7 @@ async def startup_event():
         # 한국 부동산 MCP 서버 연결 테스트
         try:
             # 부동산 MCP 서버 탐색
-            discovery_result = await mcp_client.discover_mcp_server("/app/mcp_external/kr-realestate")
+            discovery_result = await mcp_client.discover_mcp_server("/Users/lchangoo/Workspace/mcp-kr-realestate")
             if "error" not in discovery_result:
                 logger.info(f"부동산 MCP 서버 발견: {discovery_result.get('tools', [])}")
             else:

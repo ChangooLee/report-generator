@@ -16,8 +16,8 @@ class MCPClient:
         self.active_servers = {}
         self.mcp_configs = {
             "kr-realestate": {
-                "path": "/app/mcp_external/kr-realestate",
-                "command": ["python", "-m", "mcp_kr_realestate.server"],
+                "path": "/Users/lchangoo/Workspace/mcp-kr-realestate",
+                "command": ["/Users/lchangoo/Workspace/mcp-kr-realestate/.venv310/bin/mcp-kr-realestate"],
                 "description": "한국 부동산 정보 MCP 서버"
             }
         }
