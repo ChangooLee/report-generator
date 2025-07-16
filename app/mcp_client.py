@@ -75,6 +75,28 @@ class MCPClient:
                 process.terminate()
                 return False
             
+            # initialized notification 전송 (MCP 표준 필수)
+            initialized_notification = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+            }
+            
+            # notification은 응답이 없으므로 직접 전송
+            try:
+                if process.stdin is None:
+                    logger.error("프로세스 stdin이 None입니다")
+                    process.terminate()
+                    return False
+                    
+                message = json.dumps(initialized_notification) + "\n"
+                process.stdin.write(message.encode())
+                await process.stdin.drain()
+                logger.info("MCP initialized notification 전송 완료")
+            except Exception as e:
+                logger.error(f"initialized notification 전송 실패: {e}")
+                process.terminate()
+                return False
+            
             # 서버 등록
             self.active_servers[server_name] = {
                 "process": process,
