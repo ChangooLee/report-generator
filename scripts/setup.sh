@@ -39,12 +39,12 @@ NGINX_PORT=7080
 
 # OpenRouter API 설정 (메인 코드 생성용)
 VLLM_API_BASE_URL=https://openrouter.ai/api/v1
-VLLM_API_KEY=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
+VLLM_API_KEY=your-openrouter-api-key-here
 VLLM_MODEL_NAME=Qwen/Qwen2.5-Coder-32B-Instruct
 
 # Claude API 설정 (코드 수정 및 개선용)
 CLAUDE_API_BASE_URL=https://openrouter.ai/api/v1
-CLAUDE_API_KEY=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
+CLAUDE_API_KEY=your-openrouter-api-key-here
 CLAUDE_MODEL_NAME=anthropic/claude-sonnet-4
 
 # 경로 설정
