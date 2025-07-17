@@ -9,7 +9,7 @@ class TestCodeExecutor:
     """간단한 테스트용 코드 실행기"""
     
     def __init__(self):
-        self.reports_path = os.getenv('REPORTS_PATH', '/app/reports')
+        self.reports_path = os.getenv('REPORTS_PATH', os.path.join(os.getcwd(), 'reports'))
         os.makedirs(self.reports_path, exist_ok=True)
         
     async def execute_code(

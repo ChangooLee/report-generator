@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Report Generator</title>
+    <link rel="stylesheet" href="/frontend/styles/chat.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <!-- 프로그레스 바 -->
+    <div class="progress-container">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+    
+    <div class="app-container">
+        <!-- 사이드바 -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="app-title">
+                    <h1>Universal Report Generator</h1>
+                    <span class="version">v3.0</span>
+                </div>
+                <button class="sidebar-toggle" id="sidebarToggle" title="사이드바 토글">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12h18m-9-9l9 9-9 9"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="sidebar-content">
+                <!-- 새 채팅 버튼 -->
+                <button class="new-chat-btn" id="newChatBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14m-7-7h14"/>
+                    </svg>
+                    새 채팅
+                </button>
+                
+                <!-- 채팅 히스토리 -->
+                <div class="chat-history">
+                    <h3>채팅 기록</h3>
+                    <div class="chat-list" id="chatList">
+                        <!-- 채팅 히스토리가 여기에 동적으로 추가됩니다 -->
+                    </div>
+                </div>
+                
+                <!-- 도구 상태 -->
+                <div class="tools-status">
+                    <h3>연결된 도구</h3>
+                    <div class="tools-list" id="toolsList">
+                        <div class="loading">도구 목록을 불러오는 중...</div>
+                    </div>
+                </div>
+                
+                <!-- 리포트 목록 -->
+                <div class="reports-section">
+                    <h3>생성된 리포트</h3>
+                    <div class="reports-list" id="reportsList">
+                        <div class="loading">리포트 목록을 불러오는 중...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 메인 컨텐츠 -->
+        <div class="main-content">
+            <!-- 상단 헤더 -->
+            <div class="header">
+                <div class="header-left">
+                    <button class="menu-btn" id="menuBtn" title="메뉴 열기">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="3" y1="6" x2="21" y2="6"/>
+                            <line x1="3" y1="12" x2="21" y2="12"/>
+                            <line x1="3" y1="18" x2="21" y2="18"/>
+                        </svg>
+                    </button>
+                    <h2 id="currentChatTitle">새로운 분석</h2>
+                </div>
+                
+                <div class="header-right">
+                    <!-- 뷰 모드 토글 -->
+                    <div class="view-toggle">
+                        <button class="view-btn active" data-view="chat" id="chatViewBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                            </svg>
+                            채팅
+                        </button>
+                        <button class="view-btn" data-view="code" id="codeViewBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="16,18 22,12 16,6"/>
+                                <polyline points="8,6 2,12 8,18"/>
+                            </svg>
+                            코드
+                        </button>
+                        <button class="view-btn" data-view="split" id="splitViewBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                                <line x1="12" y1="3" x2="12" y2="21"/>
+                            </svg>
+                            분할
+                        </button>
+                    </div>
+                    
+                    <!-- 상태 표시기 -->
+                    <div class="status-indicator" id="statusIndicator">
+                        <div class="status-dot ready"></div>
+                        <span>준비</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 채팅 및 코드 뷰 컨테이너 -->
+            <div class="content-container">
+                <!-- 채팅 영역 -->
+                <div class="chat-area" id="chatArea">
+                    <div class="chat-messages" id="chatMessages">
+                        <!-- 환영 메시지 -->
+                        <div class="welcome-message">
+                            <div class="welcome-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                                </svg>
+                            </div>
+                            <h2>Universal Report Generator에 오신 것을 환영합니다!</h2>
+                            <p>데이터 분석이나 리포트 생성에 대해 무엇이든 물어보세요.</p>
+                            <div class="example-prompts">
+                                <div class="example-prompt" data-prompt="2025년 1월부터 7월까지 강동구 아파트 매매/전월세 현황을 분석해주세요">
+                                    🏠 강동구 아파트 분석
+                                </div>
+                                <div class="example-prompt" data-prompt="2025년 1월부터 6월까지 강남구 상업업무용 부동산 거래를 분석해주세요">
+                                    🏢 강남구 상업용 분석
+                                </div>
+                                <div class="example-prompt" data-prompt="2025년 상반기 서울시 오피스텔 매매/임대 시장 트렌드를 분석해주세요">
+                                    🏬 오피스텔 시장 분석
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 입력 영역 -->
+                    <div class="input-area">
+                        <div class="input-container">
+                            <textarea 
+                                id="messageInput" 
+                                placeholder="데이터 분석이나 리포트 생성에 대해 무엇이든 물어보세요..."
+                                rows="1"
+                            ></textarea>
+                            <button id="sendBtn" class="send-btn" disabled title="메시지 전송">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <line x1="22" y1="2" x2="11" y2="13"/>
+                                    <polygon points="22,2 15,22 11,13 2,9"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="input-options">
+                            <div class="format-options">
+                                <label>
+                                    <input type="radio" name="format" value="html" checked>
+                                    HTML 리포트
+                                </label>
+                                <label>
+                                    <input type="radio" name="format" value="json">
+                                    JSON 데이터
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 코드 뷰 영역 (클로드 데스크톱 스타일) -->
+                <div class="code-area" id="codeArea">
+                    <div class="code-header">
+                        <div class="code-title">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="16,18 22,12 16,6"/>
+                                <polyline points="8,6 2,12 8,18"/>
+                            </svg>
+                            생성된 HTML 코드
+                        </div>
+                        <div class="code-actions">
+                            <button class="code-action-btn" id="copyCodeBtn" title="코드 복사">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                                </svg>
+                            </button>
+                            <button class="code-action-btn" id="downloadCodeBtn" title="HTML 다운로드">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                                    <polyline points="7,10 12,15 17,10"/>
+                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                            </button>
+                            <button class="code-action-btn" id="previewCodeBtn" title="미리보기">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                    <circle cx="12" cy="12" r="3"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="code-content">
+                        <pre><code class="language-html" id="codeDisplay"><!-- 생성된 HTML 코드가 여기에 표시됩니다 --></code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 로딩 오버레이 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p id="loadingText">분석 중...</p>
+        </div>
+    </div>
+
+    <!-- 모달 -->
+    <div class="modal" id="previewModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>HTML 미리보기</h3>
+                <button class="modal-close" id="modalClose" title="모달 닫기">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <iframe id="previewFrame" frameborder="0"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <script src="/frontend/js/chat.js"></script>
+</body>
+</html> 

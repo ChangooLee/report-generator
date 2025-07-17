@@ -45,7 +45,7 @@ VLLM_MODEL_NAME=Qwen/Qwen2.5-Coder-32B-Instruct
 # Claude API 설정 (코드 수정 및 개선용)
 CLAUDE_API_BASE_URL=https://openrouter.ai/api/v1
 CLAUDE_API_KEY=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
-CLAUDE_MODEL_NAME=anthropic/claude-3.5-sonnet
+CLAUDE_MODEL_NAME=anthropic/claude-sonnet-4
 
 # 경로 설정
 DATA_PATH=/app/data

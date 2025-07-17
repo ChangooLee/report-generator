@@ -15,7 +15,8 @@ class CodeExecutor:
     
     def __init__(self):
         self.security_validator = SecurityValidator()
-        self.reports_path = os.getenv('REPORTS_PATH', '/app/reports')
+        # 현재 작업 디렉토리 기준으로 reports 경로 설정
+        self.reports_path = os.getenv('REPORTS_PATH', os.path.join(os.getcwd(), 'reports'))
         self.max_execution_time = int(os.getenv('MAX_EXECUTION_TIME', '300'))
         
         # 리포트 디렉토리 생성
