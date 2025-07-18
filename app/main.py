@@ -369,6 +369,39 @@ async def get_dynamic_prompts():
     """동적으로 생성된 프롬프트 반환"""
     return {"prompts": dynamic_prompts}
 
+# 실행 중인 세션들을 추적
+running_sessions = {}
+
+@app.post("/chat/abort")
+async def abort_chat(request: Dict[str, str]):
+    """실행 중인 채팅 세션을 강제 종료"""
+    session_id = request.get("session_id")
+    
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id가 필요합니다")
+    
+    try:
+        # 실행 중인 세션이 있다면 종료 플래그 설정
+        if session_id in running_sessions:
+            running_sessions[session_id]["abort"] = True
+            logger.info(f"🛑 세션 {session_id} 강제 종료 요청")
+            
+            return {
+                "success": True,
+                "message": f"세션 {session_id} 강제 종료 요청이 처리되었습니다.",
+                "session_id": session_id
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"세션 {session_id}가 실행 중이지 않습니다.",
+                "session_id": session_id
+            }
+            
+    except Exception as e:
+        logger.error(f"강제 종료 처리 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"강제 종료 실패: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn

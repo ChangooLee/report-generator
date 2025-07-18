@@ -25,6 +25,7 @@ class ChatApplication {
         this.sidebarToggle = document.getElementById('sidebarToggle');
         this.menuBtn = document.getElementById('menuBtn');
         this.newChatBtn = document.getElementById('newChatBtn');
+        this.abortChatBtn = document.getElementById('abortChatBtn');
         this.chatList = document.getElementById('chatList');
         this.toolsList = document.getElementById('toolsList');
         this.reportsList = document.getElementById('reportsList');
@@ -65,6 +66,9 @@ class ChatApplication {
 
         // 새 채팅
         this.newChatBtn?.addEventListener('click', () => this.startNewChat());
+
+        // 강제 종료
+        this.abortChatBtn?.addEventListener('click', () => this.abortCurrentChat());
 
         // 뷰 모드 변경
         this.chatViewBtn?.addEventListener('click', () => this.setView('chat'));
@@ -367,6 +371,11 @@ class ChatApplication {
         const message = this.messageInput.value.trim();
         if (!message || this.isProcessing) return;
 
+        // 세션 ID 생성 (새 메시지마다)
+        if (!this.currentSessionId) {
+            this.currentSessionId = this.generateId();
+        }
+
         // 사용자 메시지 추가
         this.addMessage('user', message);
         this.messageInput.value = '';
@@ -375,6 +384,8 @@ class ChatApplication {
         // 처리 상태 설정
         this.setProcessing(true);
         this.showTypingIndicator();
+
+        console.log('🚀 스트리밍 시작 - Session ID:', this.currentSessionId, 'Processing:', this.isProcessing);
 
         try {
             // 스트리밍 연결 설정
@@ -415,6 +426,7 @@ class ChatApplication {
         let currentContent = '';
         let htmlCode = '';
         let toolActivities = new Map(); // 도구 활동 추적
+        let llmStartCount = 0; // LLM 시작 메시지 카운트
 
         try {
             while (true) {
@@ -428,6 +440,9 @@ class ChatApplication {
                     if (line.startsWith('data: ')) {
                         try {
                             const data = JSON.parse(line.slice(6));
+                            
+                            // 🔥 디버깅: 모든 수신 메시지 로그
+                            console.log('📨 스트리밍 메시지 수신:', data.type, data);
                             
                             switch (data.type) {
                                 case 'status':
@@ -448,28 +463,58 @@ class ChatApplication {
                                     this.updateToolActivity(data.tool_name, 'error', data.error);
                                     break;
                                     
+                                case 'tool_abort':
+                                    this.updateToolActivity(data.tool_name, 'aborted', data.message);
+                                    break;
+                                    
                                 case 'llm_start':
-                                    this.addSystemMessage(`🧠 ${data.model || 'Claude'}가 응답을 생성하고 있습니다...`);
-                                    if (!assistantMessage) {
-                                        assistantMessage = this.addMessage('assistant', '');
+                                    llmStartCount++;
+                                    
+                                    // 🔥 첫 번째 llm_start만 시스템 메시지로 표시
+                                    if (llmStartCount === 1) {
+                                        this.addSystemMessage(`🧠 ${data.model || 'AI 에이전트'}가 응답을 생성하고 있습니다...`);
+                                        
+                                        // 🔥 AI 메시지 컨테이너 미리 생성
+                                        if (!assistantMessage) {
+                                            assistantMessage = this.addMessage('assistant', '');
+                                            console.log('🎯 AI 메시지 컨테이너 생성됨');
+                                        }
+                                    } else {
+                                        console.log(`⏭️ llm_start 중복 무시 (${llmStartCount}번째)`);
                                     }
                                     break;
                                     
                                 case 'content':
+                                    // 🔥 content 메시지 즉시 처리
+                                    console.log('📝 Content 수신:', data.content);
+                                    
                                     if (!assistantMessage) {
                                         assistantMessage = this.addMessage('assistant', '');
+                                        console.log('🎯 content용 AI 메시지 컨테이너 생성됨');
                                     }
+                                    
+                                    // 🔥 기존 content에 새로운 content 추가
                                     currentContent += data.content;
+                                    
+                                    // 🔥 즉시 UI 업데이트
                                     this.updateMessageContent(assistantMessage, currentContent);
+                                    console.log('✅ UI 업데이트 완료, 현재 길이:', currentContent.length);
+                                    
+                                    // 🔥 상태 업데이트 (응답 생성 중 → 응답 표시 중)
+                                    this.updateStatus('processing', '응답 표시 중...');
                                     break;
                                     
                                 case 'analysis_step':
-                                    this.addSystemMessage(`📊 ${data.message}`);
+                                    // 🔥 안전한 메시지 처리 (undefined 방지)
+                                    const analysisMessage = data.description || data.message || '분석 진행 중...';
+                                    this.addSystemMessage(`📊 ${analysisMessage}`);
+                                    console.log('📊 분석 단계:', analysisMessage);
                                     break;
                                     
                                 case 'code':
                                     htmlCode = data.code;
                                     this.updateCode(htmlCode);
+                                    console.log('💻 HTML 코드 업데이트:', htmlCode.length, '자');
                                     break;
                                     
                                 case 'progress':
@@ -482,23 +527,51 @@ class ChatApplication {
                                         this.addReportLink(assistantMessage, data.report_url);
                                     }
                                     this.addSystemMessage('✅ 분석이 성공적으로 완료되었습니다!');
+                                    console.log('🎉 스트리밍 완료');
                                     break;
                                     
                                 case 'error':
                                     this.updateStatus('error', '오류 발생');
+                                    console.error('❌ 에러 메시지:', data.message || data.error);
                                     if (!assistantMessage) {
-                                        assistantMessage = this.addMessage('assistant', `오류: ${data.message}`);
+                                        assistantMessage = this.addMessage('assistant', `오류: ${data.message || data.error}`);
+                                    } else {
+                                        this.updateMessageContent(assistantMessage, currentContent + `\n\n❌ 오류: ${data.message || data.error}`);
                                     }
                                     break;
+                                    
+                                case 'abort':
+                                    this.updateStatus('idle', '중단됨');
+                                    console.log('🛑 분석이 중단되었습니다:', data.message);
+                                    
+                                    // 모든 실행 중인 도구들을 중단 상태로 업데이트
+                                    this.abortAllRunningTools();
+                                    
+                                    if (!assistantMessage) {
+                                        assistantMessage = this.addMessage('assistant', `🛑 ${data.message || '분석이 중단되었습니다.'}`);
+                                    } else {
+                                        this.updateMessageContent(assistantMessage, currentContent + `\n\n🛑 ${data.message || '분석이 중단되었습니다.'}`);
+                                    }
+                                    break;
+                                    
+                                default:
+                                    console.warn('🤷 알 수 없는 메시지 타입:', data.type, data);
                             }
                         } catch (e) {
-                            console.warn('JSON 파싱 실패:', line);
+                            console.warn('❌ JSON 파싱 실패:', line, e);
                         }
                     }
                 }
             }
         } finally {
             reader.releaseLock();
+            console.log('📋 스트리밍 완료 - 최종 content 길이:', currentContent.length);
+            
+            // 🔥 content가 없으면 에러 메시지 표시
+            if (!currentContent.trim() && assistantMessage) {
+                this.updateMessageContent(assistantMessage, '응답을 생성하지 못했습니다. 다시 시도해 주세요.');
+                console.warn('⚠️ 최종 content가 비어있음');
+            }
         }
 
         // 채팅 히스토리 저장
@@ -701,11 +774,12 @@ class ChatApplication {
     // 처리 상태 설정
     setProcessing(processing) {
         this.isProcessing = processing;
-        this.sendBtn.disabled = processing || !this.messageInput.value.trim();
-        this.messageInput.disabled = processing;
         
         if (processing) {
             this.updateStatus('processing', '처리 중...');
+            this.showAbortButton(); // 강제 종료 버튼 표시 (내부에서 입력창 비활성화)
+        } else {
+            this.hideAbortButton(); // 강제 종료 버튼 숨김 (내부에서 입력창 활성화)
         }
     }
 
@@ -729,27 +803,98 @@ class ChatApplication {
         this.loadingOverlay.classList.remove('show');
     }
 
+    // 강제 종료 기능
+    async abortCurrentChat() {
+        if (!this.currentSessionId || !this.isProcessing) {
+            this.showToast('중단할 작업이 없습니다.', 'info');
+            return;
+        }
+        
+        try {
+            const response = await fetch('/chat/abort', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    session_id: this.currentSessionId
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                this.showToast('작업이 중단되었습니다.', 'success');
+                
+                // 모든 실행 중인 도구들을 중단 상태로 업데이트
+                this.abortAllRunningTools();
+                
+                this.hideAbortButton();
+                this.isProcessing = false;
+                this.updateStatus('idle', '준비됨');
+                this.setProgress(0);
+            } else {
+                this.showToast(result.message, 'warning');
+            }
+            
+        } catch (error) {
+            console.error('강제 종료 실패:', error);
+            this.showToast('중단 요청 실패', 'error');
+        }
+    }
+    
+    // 강제 종료 버튼 표시/숨김
+    showAbortButton() {
+        if (this.abortChatBtn) {
+            this.abortChatBtn.style.display = 'flex';
+            // 채팅 입력창 비활성화하되 분석 중단은 가능하게
+            this.messageInput.disabled = true;
+            this.sendBtn.disabled = true;
+        }
+    }
+    
+    hideAbortButton() {
+        if (this.abortChatBtn) {
+            this.abortChatBtn.style.display = 'none';
+            // 채팅 입력창 다시 활성화
+            this.messageInput.disabled = false;
+            this.sendBtn.disabled = !this.messageInput.value.trim();
+        }
+    }
+    
     // 토스트 메시지 표시
-    showToast(message) {
+    showToast(message, type = 'info') {
+        // 기존 토스트 제거
+        const existingToast = document.querySelector('.toast');
+        if (existingToast) {
+            existingToast.remove();
+        }
+        
+        // 새 토스트 생성
         const toast = document.createElement('div');
-        toast.className = 'toast';
+        toast.className = `toast toast-${type}`;
         toast.textContent = message;
+        
+        // 스타일 적용
         toast.style.cssText = `
             position: fixed;
-            bottom: 20px;
+            top: 20px;
             right: 20px;
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
+            background-color: ${type === 'success' ? 'var(--success)' : 
+                               type === 'error' ? 'var(--error)' : 
+                               type === 'warning' ? 'var(--warning)' : 'var(--accent-primary)'};
+            color: white;
             padding: 12px 20px;
             border-radius: 8px;
-            z-index: 1200;
-            animation: slideInUp 0.3s ease;
+            z-index: 10000;
+            animation: slideIn 0.3s ease;
         `;
         
         document.body.appendChild(toast);
         
+        // 3초 후 자동 제거
         setTimeout(() => {
-            toast.style.animation = 'slideOutDown 0.3s ease';
+            toast.style.animation = 'slideOut 0.3s ease';
             setTimeout(() => toast.remove(), 300);
         }, 3000);
     }
@@ -883,10 +1028,23 @@ class ChatApplication {
         const activityDiv = document.createElement('div');
         activityDiv.className = 'tool-activity';
         activityDiv.dataset.toolName = toolName;
+        
+        // 상태별 아이콘 설정
+        let icon;
+        if (status === 'running') {
+            icon = '⚙️';
+        } else if (status === 'completed') {
+            icon = '✅';
+        } else if (status === 'aborted') {
+            icon = '🛑';
+        } else {
+            icon = '❌';
+        }
+        
         activityDiv.innerHTML = `
             <div class="tool-activity-content">
                 <div class="tool-icon ${status}">
-                    ${status === 'running' ? '⚙️' : status === 'completed' ? '✅' : '❌'}
+                    ${icon}
                 </div>
                 <div class="tool-details">
                     <div class="tool-name">${toolName}</div>
@@ -911,7 +1069,15 @@ class ChatApplication {
         const spinnerElement = activityElement.querySelector('.tool-spinner');
 
         iconElement.className = `tool-icon ${status}`;
-        iconElement.textContent = status === 'completed' ? '✅' : '❌';
+        // 상태별 아이콘 설정
+        if (status === 'completed') {
+            iconElement.textContent = '✅';
+        } else if (status === 'aborted') {
+            iconElement.textContent = '🛑';
+        } else {
+            iconElement.textContent = '❌';
+        }
+        
         statusElement.textContent = this.getStatusText(status);
         spinnerElement.classList.remove('active');
 
@@ -930,6 +1096,7 @@ class ChatApplication {
             case 'running': return '실행 중...';
             case 'completed': return '완료';
             case 'error': return '오류';
+            case 'aborted': return '중단됨';
             default: return status;
         }
     }
@@ -953,6 +1120,23 @@ class ChatApplication {
         if (value < 100) {
             this.updateStatus('processing', `처리 중... (${value}%)`);
         }
+    }
+
+    // 모든 실행 중인 도구를 중단 상태로 업데이트
+    abortAllRunningTools() {
+        const runningTools = document.querySelectorAll('.tool-activity .tool-spinner.active');
+        
+        runningTools.forEach(spinner => {
+            const activity = spinner.closest('.tool-activity');
+            const toolName = activity.dataset.toolName;
+            
+            if (toolName) {
+                this.updateToolActivity(toolName, 'aborted', '사용자 요청으로 중단됨');
+                console.log(`�� 도구 ${toolName} UI 상태를 중단으로 업데이트`);
+            }
+        });
+        
+        console.log(`🛑 총 ${runningTools.length}개 도구가 중단 상태로 업데이트됨`);
     }
 }
 

@@ -47,14 +47,14 @@ class PromptTemplates:
 
 ## 4. 기술적 요구사항
 - 완전한 오프라인 동작 (외부 CDN 사용 금지)
-- 모바일 반응형 디자인
+   - 모바일 반응형 디자인
 - 접근성 준수 (ARIA 라벨, 키보드 네비게이션)
 - 프린트 최적화
 - 로딩 애니메이션 및 스크롤 효과
 
 ## 5. 보안 및 품질 기준
 - XSS 방지를 위한 데이터 이스케이핑
-- 안전한 파일 경로만 사용
+   - 안전한 파일 경로만 사용
 - 코드 주석 및 에러 처리 포함
 - 성능 최적화 고려
 
@@ -93,8 +93,8 @@ try:
         "labels": [],  # 실제 데이터에서 추출
         "datasets": []  # 실제 데이터에서 생성
     }}
-    
-    # HTML 리포트 생성
+
+# HTML 리포트 생성
     html_content = f'''
 <!DOCTYPE html>
 <html lang="ko">
@@ -161,7 +161,7 @@ try:
                     <canvas id="trendChart" width="400" height="200"></canvas>
                 </div>
                 
-                <div class="chart-container">
+        <div class="chart-container">
                     <h3 class="chart-title">분포 현황</h3>
                     <canvas id="distributionChart" width="400" height="200"></canvas>
                 </div>
@@ -308,12 +308,12 @@ try:
 </body>
 </html>
 '''
-    
-    # 파일 저장
+
+# 파일 저장
     report_filename = f"report_{session_id}.html"
     with open(report_filename, 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    
+    f.write(html_content)
+
     print(f"✅ 삼성생명 종합 리포트가 성공적으로 생성되었습니다: {{report_filename}}")
     print("📈 주요 분석 결과:")
     print(f"   - 총 데이터 건수: {{key_metrics['total_records']:,}}")

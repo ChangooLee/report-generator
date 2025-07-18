@@ -1,5 +1,5 @@
 [
-  {
+    {
     "date": "2024-01",
     "region": "서울",
     "product_type": "생명보험",
@@ -20,8 +20,8 @@
     "customer_satisfaction": 4.3,
     "claims_ratio": 0.11,
     "agent_count": 60
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "서울",
     "product_type": "생명보험",
@@ -42,8 +42,8 @@
     "customer_satisfaction": 4.5,
     "claims_ratio": 0.09,
     "agent_count": 65
-  },
-  {
+    },
+    {
     "date": "2024-05",
     "region": "서울",
     "product_type": "생명보험",
@@ -75,8 +75,8 @@
     "customer_satisfaction": 4.2,
     "claims_ratio": 0.13,
     "agent_count": 44
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "부산",
     "product_type": "생명보험",
@@ -97,8 +97,8 @@
     "customer_satisfaction": 4.4,
     "claims_ratio": 0.11,
     "agent_count": 48
-  },
-  {
+    },
+    {
     "date": "2024-05",
     "region": "부산",
     "product_type": "생명보험",
@@ -130,8 +130,8 @@
     "customer_satisfaction": 4.1,
     "claims_ratio": 0.14,
     "agent_count": 37
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "대구",
     "product_type": "연금보험",
@@ -163,8 +163,8 @@
     "customer_satisfaction": 4.4,
     "claims_ratio": 0.11,
     "agent_count": 43
-  },
-  {
+    },
+    {
     "date": "2024-01",
     "region": "인천",
     "product_type": "건강보험",
@@ -196,8 +196,8 @@
     "customer_satisfaction": 4.1,
     "claims_ratio": 0.16,
     "agent_count": 32
-  },
-  {
+    },
+    {
     "date": "2024-04",
     "region": "인천",
     "product_type": "건강보험",
@@ -229,8 +229,8 @@
     "customer_satisfaction": 3.8,
     "claims_ratio": 0.22,
     "agent_count": 22
-  },
-  {
+    },
+    {
     "date": "2024-02",
     "region": "광주",
     "product_type": "자동차보험",
@@ -251,8 +251,8 @@
     "customer_satisfaction": 4.0,
     "claims_ratio": 0.20,
     "agent_count": 26
-  },
-  {
+    },
+    {
     "date": "2024-04",
     "region": "광주",
     "product_type": "자동차보험",
@@ -273,5 +273,5 @@
     "customer_satisfaction": 4.2,
     "claims_ratio": 0.18,
     "agent_count": 30
-  }
+    }
 ] 

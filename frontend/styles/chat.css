@@ -136,6 +136,61 @@ body {
     background-color: var(--accent-hover);
 }
 
+/* 채팅 입력창 분석 중단 버튼 */
+.abort-btn {
+    background-color: var(--error);
+    color: white;
+    border: none;
+    padding: 16px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: var(--transition);
+    animation: pulse 2s infinite;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    height: 56px;
+    flex-shrink: 0;
+}
+
+.abort-btn:hover {
+    background-color: #c82333;
+    transform: translateY(-1px);
+}
+
+.abort-btn:active {
+    transform: translateY(0);
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.8; }
+}
+
+/* 토스트 애니메이션 */
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+@keyframes slideOut {
+    from {
+        transform: translateX(0);
+        opacity: 1;
+    }
+    to {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+}
+
 /* 사이드바 섹션 */
 .sidebar-content h3 {
     font-size: 14px;
@@ -464,7 +519,7 @@ body {
 }
 
 .message.user {
-    flex-direction: row-reverse;
+    flex-direction: row;
 }
 
 .message-avatar {
@@ -490,7 +545,7 @@ body {
 }
 
 .message.user .message-content {
-    text-align: right;
+    text-align: left;
 }
 
 .message-text {
@@ -513,7 +568,7 @@ body {
 }
 
 .message.user .message-time {
-    text-align: right;
+    text-align: left;
 }
 
 /* 타이핑 표시기 */
@@ -567,13 +622,16 @@ body {
 }
 
 .input-container {
-    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
     max-width: 800px;
     margin: 0 auto;
+    position: relative;
 }
 
 #messageInput {
-    width: 100%;
+    flex: 1;
     min-height: 56px;
     max-height: 200px;
     padding: 16px 60px 16px 20px;
@@ -989,6 +1047,12 @@ body {
     color: white;
 }
 
+.tool-icon.aborted {
+    background-color: var(--error);
+    color: white;
+    opacity: 0.7;
+}
+
 .tool-details {
     flex: 1;
 }
@@ -1103,5 +1167,4 @@ textarea:focus-visible,
 input:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: 2px;
-} 
 } 

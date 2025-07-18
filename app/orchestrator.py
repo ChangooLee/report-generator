@@ -34,47 +34,39 @@ class UniversalOrchestrator:
         
         logger.info("🚀 Universal Orchestrator (LangGraph) 초기화 완료")
 
-    async def process_query_with_streaming(self, user_query: str, session_id: str, streaming_callback=None) -> Dict:
-        """스트리밍 콜백과 함께 쿼리 처리"""
+    async def process_query_with_streaming(self, user_query: str, session_id: str, streaming_callback) -> Dict[str, Any]:
+        """스트리밍과 함께 쿼리 처리"""
+        
         try:
-            logger.info(f"🔍 쿼리 처리 시작: {user_query} (세션: {session_id})")
+            logger.info(f"🔄 쿼리 처리 시작: {session_id}")
             
-            # LangGraph 워크플로우로 스트리밍 실행
-            result = await self.langgraph_workflow.run_with_streaming(user_query, streaming_callback)
+            # 중단 체크 함수
+            def should_abort():
+                # running_sessions import가 필요할 수 있음
+                from .streaming_api import running_sessions
+                return running_sessions.get(session_id, {}).get("abort", False)
             
-            # HTML 리포트 생성
-            if result.get("success") and result.get("report_content"):
-                html_content = result["report_content"]
-                
-                # 리포트 파일 저장
-                report_filename = f"report_{session_id}.html"
-                report_path = f"reports/{report_filename}"
-                
-                # reports 디렉터리가 없으면 생성
-                os.makedirs("reports", exist_ok=True)
-                
-                with open(report_path, "w", encoding="utf-8") as f:
-                    f.write(html_content)
-                
-                result["html_content"] = html_content
-                result["report_url"] = f"/reports/{report_filename}"
+            # 중단 체크
+            if should_abort():
+                logger.info(f"🛑 쿼리 처리 시작 전 중단 감지: {session_id}")
+                return {"success": False, "error": "중단됨", "analysis": "", "report_content": ""}
+            
+            # LangGraph 워크플로우 실행
+            result = await self.langgraph_workflow.run_with_streaming(
+                user_query, 
+                streaming_callback,
+                abort_check=should_abort  # 중단 체크 함수 전달
+            )
             
             logger.info(f"✅ 쿼리 처리 완료: {session_id}")
             return result
             
+        except asyncio.CancelledError:
+            logger.info(f"🛑 쿼리 처리 취소됨: {session_id}")
+            return {"success": False, "error": "중단됨", "analysis": "", "report_content": ""}
         except Exception as e:
             logger.error(f"❌ 쿼리 처리 실패: {e}")
-            if streaming_callback:
-                await streaming_callback.send_error(str(e))
-            
-            return {
-                "success": False,
-                "error": str(e),
-                "session_id": session_id,
-                "analysis": "",
-                "html_content": "",
-                "report_url": ""
-            }
+            return {"success": False, "error": str(e), "analysis": "", "report_content": ""}
 
     async def process_query(self, user_query: str, session_id: str, **kwargs) -> Dict[str, Any]:
         """스트리밍 API를 위한 쿼리 처리 메서드"""
