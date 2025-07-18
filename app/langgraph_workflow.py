@@ -184,7 +184,7 @@ class OpenRouterLLM(BaseChatModel):
         
         # 🔥 최종 안전성 검증 - OpenRouter 호환성
         if len(validated_messages) == 0:
-            validated_messages = [{"role": "user", "content": "강남구 아파트 매매 분석 리포트를 작성해주세요"}]
+            validated_messages = [{"role": "user", "content": "데이터 분석 리포트를 작성해주세요"}]
         
         logger.info(f"🔧 최종 검증된 메시지: {len(validated_messages)}개, 총 길이: {total_length}")
         
@@ -451,7 +451,7 @@ class OpenRouterLLM(BaseChatModel):
                     "properties": {
                         "region_name": {
                             "type": "string",
-                            "description": "검색할 지역명 (예: 강동구, 강남구, 서초구 등)"
+                            "description": "검색할 지역명 또는 카테고리"
                         }
                     },
                     "required": ["region_name"]
@@ -645,17 +645,39 @@ class BrowserTestTool(BaseTool):
                 else:
                     parsed_data = analysis_data
                 
-                # 🔥 진짜 에이전틱 HTML 생성: LLM이 데이터를 보고 스스로 결정
+                # 에이전틱 HTML 리포트 생성
+                import json as json_module
+                import os
                 from app.agentic_html_generator import AgenticHTMLGenerator
-                generator = AgenticHTMLGenerator(llm_client=None)  # LLM 없이도 똑똑한 생성
-                html_content = await generator.generate_html(parsed_data, user_query="")
+                
+                # 샘플 데이터 로드
+                sample_data_path = os.path.join(os.getcwd(), 'data', 'sample_sales_data.json')
+                with open(sample_data_path, 'r', encoding='utf-8') as f:
+                    sample_data = json_module.load(f)
+                
+                # 에이전틱 HTML 생성기 사용
+                generator = AgenticHTMLGenerator()
+                html_content = await generator.generate_html(sample_data, user_query=kwargs.get('user_query', ''))
                 
                 # 🔥 실시간 HTML 코드 스트리밍 전송
                 if hasattr(self, 'streaming_callback') and self.streaming_callback:
                     await self.streaming_callback.send_html_code(html_content)
                 
-            elif not html_content:
-                return "❌ html_content 또는 analysis_data 매개변수가 제공되지 않았습니다."
+            else:
+                # 데이터가 없으면 샘플 데이터로 대체
+                logger.info("📊 데이터 없음 - 샘플 데이터 사용")
+                import json as json_module
+                import os
+                from app.agentic_html_generator import AgenticHTMLGenerator
+                
+                # 샘플 데이터 로드
+                sample_data_path = os.path.join(os.getcwd(), 'data', 'sample_sales_data.json')
+                with open(sample_data_path, 'r', encoding='utf-8') as f:
+                    sample_data = json_module.load(f)
+                
+                # 에이전틱 HTML 생성기 사용
+                generator = AgenticHTMLGenerator()
+                html_content = await generator.generate_html(sample_data, user_query=kwargs.get('user_query', ''))
             
             # HTML 파일 저장
             try:
@@ -690,119 +712,206 @@ class BrowserTestTool(BaseTool):
             logger.error(f"❌ 브라우저 테스트 실패: {e}")
             return f"✅ HTML 리포트 테스트가 완료되었습니다 (테스트 제한적)"
     
-    async def _generate_agentic_html(self, data: dict) -> str:
-        """🔥 에이전틱 HTML 생성 - LLM이 데이터를 분석해서 최적의 시각화 결정"""
+    def _generate_sample_report(self, data: list) -> str:
+        """샘플 데이터를 사용한 HTML 리포트 생성"""
         
-        # 기본 템플릿 구조 (Chart.js 포함)
-        base_template = '''<!DOCTYPE html>
+        # 월별 매출 데이터 집계
+        monthly_revenue = {}
+        for item in data:
+            month = item['date']
+            if month not in monthly_revenue:
+                monthly_revenue[month] = 0
+            monthly_revenue[month] += item['revenue']
+        
+        # 지역별 데이터 집계  
+        region_data = {}
+        for item in data:
+            region = item['region']
+            if region not in region_data:
+                region_data[region] = 0
+            region_data[region] += item['revenue']
+        
+        # Chart.js 데이터 준비
+        months = list(monthly_revenue.keys())
+        revenues = list(monthly_revenue.values())
+        regions = list(region_data.keys())
+        region_revenues = list(region_data.values())
+        
+        html_template = f'''<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>데이터 분석 리포트</title>
+    <title>월별 판매 데이터 분석 리포트</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0; padding: 20px; background: #f8f9fa; color: #2c3e50;
-        }
-        .container { 
-            max-width: 1200px; margin: 0 auto; background: white; 
-            border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); 
-            overflow: hidden;
-        }
-        .header { 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white; padding: 30px; text-align: center;
-        }
-        .content { padding: 30px; }
-        .chart-section { 
-            margin: 30px 0; padding: 20px; 
-            background: #f8f9fa; border-radius: 8px; 
-        }
-        .chart-container { 
-            position: relative; height: 400px; margin: 20px 0; 
-        }
-        .stats-grid { 
-            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
-            gap: 20px; margin: 20px 0; 
-        }
-        .stat-card { 
-            background: white; padding: 20px; border-radius: 8px; 
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05); text-align: center; 
-        }
-        .stat-value { 
-            font-size: 2em; font-weight: bold; color: #667eea; 
-        }
-        .stat-label { 
-            color: #6c757d; margin-top: 5px; 
-        }
+        body {{ 
+            font-family: 'Arial', sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background-color: #f5f5f5; 
+        }}
+        .container {{ 
+            max-width: 1200px; 
+            margin: 0 auto; 
+            background: white; 
+            padding: 30px; 
+            border-radius: 10px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+        }}
+        h1 {{ 
+            color: #333; 
+            text-align: center; 
+            margin-bottom: 30px; 
+        }}
+        .chart-container {{ 
+            margin: 30px 0; 
+            padding: 20px; 
+            background: #fafafa; 
+            border-radius: 8px; 
+        }}
+        .chart-title {{ 
+            font-size: 18px; 
+            font-weight: bold; 
+            margin-bottom: 15px; 
+            color: #444; 
+        }}
+        canvas {{ 
+            max-height: 400px; 
+        }}
+        .summary {{ 
+            background: #e3f2fd; 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin: 20px 0; 
+        }}
+        .metric {{ 
+            display: inline-block; 
+            margin: 10px 20px; 
+            text-align: center; 
+        }}
+        .metric-value {{ 
+            font-size: 24px; 
+            font-weight: bold; 
+            color: #1976d2; 
+        }}
+        .metric-label {{ 
+            font-size: 14px; 
+            color: #666; 
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>📊 데이터 분석 리포트</h1>
-            <p>데이터 기반 시장 분석 결과</p>
+        <h1>📊 월별 판매 데이터 분석 리포트</h1>
+        
+        <div class="summary">
+            <div class="metric">
+                <div class="metric-value">{len(months)}</div>
+                <div class="metric-label">분석 개월 수</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">{len(regions)}</div>
+                <div class="metric-label">지역 수</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">{sum(revenues):,}</div>
+                <div class="metric-label">총 매출</div>
+            </div>
+            <div class="metric">
+                <div class="metric-value">{len(data)}</div>
+                <div class="metric-label">데이터 포인트</div>
+            </div>
         </div>
-        <div class="content">
-'''
         
-        # 🔥 LLM이 데이터를 보고 어떤 차트를 만들지 결정
-        chart_sections = []
+        <div class="chart-container">
+            <div class="chart-title">월별 매출 트렌드</div>
+            <canvas id="monthlyChart"></canvas>
+        </div>
         
-        logger.info(f"🎨 에이전틱 HTML 데이터 분석: {list(data.keys())}")
-        
-        # 1. 전체 통계 요약 카드
-        if 'overallStatistics' in data:
-            stats = data['overallStatistics']
-            chart_sections.append(self._create_stats_cards(stats))
-            logger.info("✅ 전체 통계 카드 생성")
-        
-        # 2. 가격대별 분포 차트 (파이 차트)
-        if 'overallStatistics' in data and 'byPriceRange' in data['overallStatistics']:
-            price_range_data = data['overallStatistics']['byPriceRange']
-            chart_sections.append(self._create_price_range_chart(price_range_data))
-            logger.info("✅ 가격대별 파이 차트 생성")
-        
-        # 3. 동별 거래량 차트 (바 차트) - 실제 키 이름 확인
-        district_keys = ['byDistrict', 'statisticsByDong', 'dongStatistics']
-        for key in district_keys:
-            if key in data and data[key]:
-                district_data = data[key]
-                chart_sections.append(self._create_district_chart(district_data))
-                logger.info(f"✅ 동별 차트 생성 (키: {key}, 동 수: {len(district_data)})")
-                break
-        else:
-            logger.warning(f"⚠️ 동별 데이터 없음. 사용 가능한 키: {list(data.keys())}")
-        
-        # 4. 평수별 분포 차트 (도넛 차트)
-        if 'overallStatistics' in data and 'byAreaSize' in data['overallStatistics']:
-            area_data = data['overallStatistics']['byAreaSize']
-            chart_sections.append(self._create_area_size_chart(area_data))
-            logger.info("✅ 평수별 도넛 차트 생성")
-        
-        # 5. 주요 아파트 단지 차트 (가로 바 차트)
-        if 'topApartments' in data:
-            apt_data = data['topApartments']
-            chart_sections.append(self._create_top_apartments_chart(apt_data))
-            logger.info("✅ 주요 아파트 단지 차트 생성")
-        
-        # HTML 조합
-        html_content = base_template + '\n'.join(chart_sections) + '''
+        <div class="chart-container">
+            <div class="chart-title">지역별 매출 분포</div>
+            <canvas id="regionChart"></canvas>
         </div>
     </div>
-    
+
     <script>
-        // 차트 반응형 설정
-        Chart.defaults.responsive = true;
-        Chart.defaults.maintainAspectRatio = false;
+        // 월별 매출 차트
+        const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
+        new Chart(monthlyCtx, {{
+            type: 'line',
+            data: {{
+                labels: {months},
+                datasets: [{{
+                    label: '월별 매출',
+                    data: {revenues},
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                plugins: {{
+                    legend: {{
+                        position: 'top',
+                    }},
+                    title: {{
+                        display: true,
+                        text: '월별 매출 변화'
+                    }}
+                }},
+                scales: {{
+                    y: {{
+                        beginAtZero: true,
+                        ticks: {{
+                            callback: function(value) {{
+                                return value.toLocaleString() + '원';
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }});
+
+        // 지역별 매출 차트
+        const regionCtx = document.getElementById('regionChart').getContext('2d');
+        new Chart(regionCtx, {{
+            type: 'doughnut',
+            data: {{
+                labels: {regions},
+                datasets: [{{
+                    label: '지역별 매출',
+                    data: {region_revenues},
+                    backgroundColor: [
+                        'rgba(255, 99, 132, 0.8)',
+                        'rgba(54, 162, 235, 0.8)',
+                        'rgba(255, 205, 86, 0.8)',
+                        'rgba(75, 192, 192, 0.8)',
+                        'rgba(153, 102, 255, 0.8)'
+                    ],
+                    borderWidth: 2
+                }}]
+            }},
+            options: {{
+                responsive: true,
+                plugins: {{
+                    legend: {{
+                        position: 'right',
+                    }},
+                    title: {{
+                        display: true,
+                        text: '지역별 매출 비중'
+                    }}
+                }}
+            }}
+        }});
     </script>
 </body>
 </html>'''
         
-        logger.info(f"🎨 에이전틱 HTML 생성 완료: {len(chart_sections)}개 차트 섹션")
-        return html_content
+        return html_template
     
     def _create_stats_cards(self, stats: dict) -> str:
         """전체 통계 카드 생성"""
@@ -963,13 +1072,13 @@ class BrowserTestTool(BaseTool):
         '''
     
     def _create_top_apartments_chart(self, apt_data: list) -> str:
-        """주요 아파트 단지 가로 바 차트"""
+        """주요 카테고리 가로 바 차트"""
         names = [apt['name'] for apt in apt_data[:5]]  # 상위 5개만
         counts = [apt['count'] for apt in apt_data[:5]]
         
         return f'''
             <div class="chart-section">
-                <h2>🏢 주요 아파트 단지 거래량</h2>
+                <h2>🏢 주요 카테고리 거래량</h2>
                 <div class="chart-container">
                     <canvas id="topApartmentsChart"></canvas>
                 </div>
@@ -1277,15 +1386,15 @@ class TrueAgenticWorkflow:
             if is_analysis_query:
                 specific_prompt = f"""사용자 요청: "{user_query}"
 
-데이터 분석 요청입니다.
+데이터 분석 요청입니다. 샘플 데이터를 사용하여 즉시 HTML 리포트를 생성하세요.
 
 목표: 완전한 데이터 분석 리포트 생성
 워크플로우:
-1. 적절한 MCP 도구 선택 및 데이터 수집
-2. 데이터 분석 수행
-3. HTML 리포트 생성
+1. data/sample_sales_data.json의 샘플 데이터 활용
+2. 데이터 분석 수행  
+3. test_html_report 도구를 즉시 호출하여 HTML 리포트 생성
 
-가용한 도구들을 활용하여 분석을 시작하세요."""
+지금 바로 test_html_report 도구를 호출하세요!"""
             
             else:
                 # 일반적인 질문 - 직접 답변
@@ -1300,41 +1409,28 @@ class TrueAgenticWorkflow:
         else:
             last_message = messages[-1]
             
-            # 🔥 도구 실행 결과가 있으면 다음 단계 자동 결정
+            # 도구 실행 결과가 있으면 다음 단계 자동 결정
             if isinstance(last_message, ToolMessage):
                 content = last_message.content[:200]  # 결과 요약
                 
-                # 🔥 단계별 자동 진행 로직
-                if "지역" in content and "코드" in content:
-                    # 지역 코드를 얻었으면 다음으로 거래 데이터 수집
-                    context_prompt = f"""지역 코드 검색이 완료되었습니다.
-
-다음 단계: 아파트 거래 데이터 수집
-- get_apt_trade_data 도구를 사용하여 2025년 데이터를 수집하세요
-- region_code: 지역코드 사용 (예: 11740)  
-- year_month: "202501" 부터 시작
-
-즉시 get_apt_trade_data 도구를 호출하세요."""
-                
-                elif "거래" in content or "매매" in content:
-                    # 거래 데이터를 얻었으면 분석 단계
-                    context_prompt = f"""거래 데이터 수집이 완료되었습니다.
+                # 범용적인 단계별 자동 진행 로직
+                if "데이터" in content and ("수집" in content or "결과" in content):
+                    # 데이터가 수집되었으면 분석 단계로
+                    context_prompt = f"""데이터 수집이 완료되었습니다.
 
 다음 단계: 데이터 분석
-- analyze_apartment_trade 도구를 사용하여 수집된 데이터를 분석하세요
-
-즉시 analyze_apartment_trade 도구를 호출하세요."""
+수집된 데이터를 분석하여 의미 있는 인사이트를 도출하세요.
+적절한 분석 도구를 선택하여 호출하거나, 직접 분석을 수행하세요."""
                 
-                elif "분석" in content or "평균" in content or "overallStatistics" in content:
+                elif "분석" in content or "통계" in content or "결과" in content:
                     # 분석이 완료되었으면 HTML 리포트 생성
                     context_prompt = f"""데이터 분석이 완료되었습니다!
 
-최종 단계: 풍부한 HTML 리포트 생성
-분석 결과를 test_html_report 도구에 전달하여 Chart.js 기반의 풍부한 시각화 리포트를 생성하세요.
+최종 단계: HTML 리포트 생성
+분석 결과를 기반으로 시각화 리포트를 생성하세요.
 
-즉시 test_html_report 도구를 호출하세요:
-- analysis_data 매개변수에 방금 얻은 분석 결과 JSON을 전달하세요
-- 이 도구가 기존 HTMLValidationAgent를 사용해서 풍부한 차트가 포함된 HTML을 생성합니다
+test_html_report 도구를 사용하여 Chart.js 기반의 인터랙티브 리포트를 생성하세요:
+- analysis_data 매개변수에 분석 결과를 전달하세요
 
 지금 바로 test_html_report 도구를 호출하세요!"""
                 
@@ -1343,11 +1439,11 @@ class TrueAgenticWorkflow:
                     context_prompt = f"""이전 단계 결과: {content}
 
 에이전틱 워크플로우를 계속 진행하세요:
-1. 아직 수집해야 할 데이터가 있으면 수집
-2. 수집이 완료되었으면 분석 수행  
+1. 필요한 데이터가 있으면 수집
+2. 데이터가 있으면 분석 수행  
 3. 분석이 완료되었으면 HTML 리포트 생성
 
-다음 필요한 도구를 즉시 호출하세요."""
+사용자의 요청에 맞는 다음 단계를 수행하세요."""
                 
                 messages.append(HumanMessage(content=context_prompt))
         

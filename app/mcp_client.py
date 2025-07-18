@@ -16,14 +16,16 @@ class MCPClient:
         self.active_servers = {}
         self.server_locks = {}  # 서버별 락 추가
         
-        # 기본 MCP 서버 설정
-        self.mcp_configs = {
-            "kr-realestate": {
+        # 기본 MCP 서버 설정 (환경 변수로 제어)
+        self.mcp_configs = {}
+        
+        # 환경 변수가 설정된 경우에만 부동산 서버 활성화
+        if os.getenv("ENABLE_REALESTATE_MCP", "false").lower() == "true":
+            self.mcp_configs["kr-realestate"] = {
                 "path": "/Users/lchangoo/Workspace/mcp-kr-realestate",
                 "command": ["/Users/lchangoo/Workspace/mcp-kr-realestate/.venv310/bin/mcp-kr-realestate"],
                 "description": "한국 부동산 정보 MCP 서버"
             }
-        }
         
         # 환경 변수나 추가 설정에서 MCP 서버들 자동 발견
         self._discover_mcp_servers()

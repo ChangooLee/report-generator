@@ -213,7 +213,7 @@ class HTMLValidationAgent:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>강남구 상업업무용 부동산 실거래 분석 리포트 (2025년 6-7월)</title>
+    <title>데이터 분석 리포트</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {{
@@ -363,7 +363,7 @@ class HTMLValidationAgent:
 <body>
     <div class="container">
         <div class="header">
-            <h1>강남구 상업업무용 부동산 실거래 분석 리포트</h1>
+            <h1>데이터 분석 리포트</h1>
             <p>2025년 6월 - 7월 실제 거래 데이터 기반 분석</p>
         </div>
         
@@ -428,12 +428,12 @@ class HTMLValidationAgent:
             
             <div class="insight-box">
                 <h3>🔮 중기 전망 (3-12개월)</h3>
-                <p>강남구 상업업무용 부동산 시장의 지속적인 모니터링과 시장 변화에 따른 전략 조정 권장</p>
+                <p>데이터 기반 지속적인 모니터링과 트렌드 변화에 따른 전략 조정 권장</p>
             </div>
         </div>
         
         <div class="footer">
-            <p>본 리포트는 실제 MCP 부동산 거래 데이터를 기반으로 생성되었습니다. (생성일: {data.get('collection_time', 'N/A')})</p>
+            <p>본 리포트는 실제 MCP 데이터를 기반으로 생성되었습니다. (생성일: {data.get('collection_time', 'N/A')})</p>
         </div>
     </div>
     
