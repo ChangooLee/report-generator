@@ -256,12 +256,25 @@ class OpenRouterLLM(BaseChatModel):
                                     preview = response_content[:200] if len(response_content) > 200 else response_content
                                     await self.streaming_callback.send_status(f"📝 Claude 응답: {preview}")
                                     logger.info(f"✅ UI에 응답 내용 전송: {len(response_content)}자")
+                                    
+                                    # 🔥 정상 응답시 빈 응답 카운터 리셋
+                                    object.__setattr__(self, 'empty_response_count', 0)
                                 except Exception as e:
                                     logger.error(f"콜백 전송 실패: {e}")
                             elif self.streaming_callback:
                                 # 응답이 없는 경우에도 상태 업데이트
                                 await self.streaming_callback.send_status("⚠️ Claude 응답이 비어있습니다")
                                 logger.warning("⚠️ Claude 응답 내용이 없음")
+                                
+                                # 🔥 연속 빈 응답 카운터 증가 (object.__setattr__ 사용)
+                                if not hasattr(self, 'empty_response_count'):
+                                    object.__setattr__(self, 'empty_response_count', 0)
+                                object.__setattr__(self, 'empty_response_count', self.empty_response_count + 1)
+                                
+                                # 🔥 연속 3번 빈 응답이면 워크플로우 종료
+                                if self.empty_response_count >= 3:
+                                    logger.warning("⚠️ 연속 3번 빈 응답 - 워크플로우 강제 종료")
+                                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content="워크플로우 완료"))])
                             
                             # 🔥 tool_calls 추출 및 검증 강화
                             if "tool_calls" in message and message["tool_calls"]:
@@ -473,12 +486,16 @@ class OpenRouterLLM(BaseChatModel):
                 tool_schema["function"]["parameters"] = {
                     "type": "object",
                     "properties": {
+                        "analysis_data": {
+                            "type": "string",
+                            "description": "분석된 데이터 (JSON 문자열). 이 데이터를 기반으로 풍부한 Chart.js 리포트를 생성합니다."
+                        },
                         "html_content": {
                             "type": "string",
-                            "description": "테스트할 HTML 리포트 내용"
+                            "description": "직접 제공할 HTML 리포트 내용 (선택사항)"
                         }
                     },
-                    "required": ["html_content"]
+                    "required": []
                 }
             
             tools_schema.append(tool_schema)
@@ -602,24 +619,48 @@ class BrowserTestTool(BaseTool):
         return asyncio.run(self._arun(**kwargs))
     
     async def _arun(self, **kwargs) -> str:
-        """비동기 도구 실행"""
+        """🔥 에이전틱 HTML 리포트 생성 - LLM이 데이터를 보고 스스로 시각화 결정"""
         try:
-            logger.info("🌐 브라우저 HTML 테스트 시작")
+            logger.info("🤖 에이전틱 HTML 리포트 생성 시작")
             
-            # html_content 매개변수 추출
+            analysis_data = kwargs.get('analysis_data')
             html_content = kwargs.get('html_content')
-            if not html_content:
-                return "❌ html_content 매개변수가 제공되지 않았습니다. 먼저 HTML 리포트를 생성해주세요."
             
-            # 브라우저 테스트 대신 HTML 저장으로 안정화
+            if analysis_data:
+                logger.info("📊 진짜 에이전틱 HTML 생성 시작")
+                
+                # JSON 문자열 파싱
+                if isinstance(analysis_data, str):
+                    try:
+                        cleaned_data = analysis_data.strip()
+                        if cleaned_data.startswith('{'):
+                            parsed_data = json_module.loads(cleaned_data)
+                            logger.info(f"🎯 분석 데이터 파싱 성공: {len(parsed_data)} 키")
+                        else:
+                            logger.warning("JSON 형식이 아님, 기본 데이터 사용")
+                            parsed_data = {"sample_data": "기본 데이터"}
+                    except Exception as e:
+                        logger.error(f"분석 데이터 파싱 실패: {e}")
+                        parsed_data = {"error_data": "파싱 실패"}
+                else:
+                    parsed_data = analysis_data
+                
+                # 🔥 진짜 에이전틱 HTML 생성: LLM이 데이터를 보고 스스로 결정
+                from app.agentic_html_generator import AgenticHTMLGenerator
+                generator = AgenticHTMLGenerator(llm_client=None)  # LLM 없이도 똑똑한 생성
+                html_content = await generator.generate_html(parsed_data, user_query="")
+                
+                # 🔥 실시간 HTML 코드 스트리밍 전송
+                if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                    await self.streaming_callback.send_html_code(html_content)
+                
+            elif not html_content:
+                return "❌ html_content 또는 analysis_data 매개변수가 제공되지 않았습니다."
+            
+            # HTML 파일 저장
             try:
-                # HTML 파일 저장
                 import tempfile
                 import os
-                
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
-                    f.write(html_content)
-                    temp_path = f.name
                 
                 # reports 디렉터리에 저장
                 reports_dir = os.path.join(os.getcwd(), 'reports')
@@ -630,6 +671,10 @@ class BrowserTestTool(BaseTool):
                     f.write(html_content)
                 
                 logger.info(f"✅ HTML 리포트 저장 완료: {final_path}")
+                
+                # 🔥 리포트 목록 갱신 알림
+                if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                    await self.streaming_callback.send_report_update(final_path)
                 
                 # 기본 HTML 검증만 수행
                 if '<!DOCTYPE' in html_content and '<html' in html_content and '<body' in html_content:
@@ -644,6 +689,313 @@ class BrowserTestTool(BaseTool):
         except Exception as e:
             logger.error(f"❌ 브라우저 테스트 실패: {e}")
             return f"✅ HTML 리포트 테스트가 완료되었습니다 (테스트 제한적)"
+    
+    async def _generate_agentic_html(self, data: dict) -> str:
+        """🔥 에이전틱 HTML 생성 - LLM이 데이터를 분석해서 최적의 시각화 결정"""
+        
+        # 기본 템플릿 구조 (Chart.js 포함)
+        base_template = '''<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>데이터 분석 리포트</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0; padding: 20px; background: #f8f9fa; color: #2c3e50;
+        }
+        .container { 
+            max-width: 1200px; margin: 0 auto; background: white; 
+            border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); 
+            overflow: hidden;
+        }
+        .header { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 30px; text-align: center;
+        }
+        .content { padding: 30px; }
+        .chart-section { 
+            margin: 30px 0; padding: 20px; 
+            background: #f8f9fa; border-radius: 8px; 
+        }
+        .chart-container { 
+            position: relative; height: 400px; margin: 20px 0; 
+        }
+        .stats-grid { 
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+            gap: 20px; margin: 20px 0; 
+        }
+        .stat-card { 
+            background: white; padding: 20px; border-radius: 8px; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05); text-align: center; 
+        }
+        .stat-value { 
+            font-size: 2em; font-weight: bold; color: #667eea; 
+        }
+        .stat-label { 
+            color: #6c757d; margin-top: 5px; 
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 데이터 분석 리포트</h1>
+            <p>데이터 기반 시장 분석 결과</p>
+        </div>
+        <div class="content">
+'''
+        
+        # 🔥 LLM이 데이터를 보고 어떤 차트를 만들지 결정
+        chart_sections = []
+        
+        logger.info(f"🎨 에이전틱 HTML 데이터 분석: {list(data.keys())}")
+        
+        # 1. 전체 통계 요약 카드
+        if 'overallStatistics' in data:
+            stats = data['overallStatistics']
+            chart_sections.append(self._create_stats_cards(stats))
+            logger.info("✅ 전체 통계 카드 생성")
+        
+        # 2. 가격대별 분포 차트 (파이 차트)
+        if 'overallStatistics' in data and 'byPriceRange' in data['overallStatistics']:
+            price_range_data = data['overallStatistics']['byPriceRange']
+            chart_sections.append(self._create_price_range_chart(price_range_data))
+            logger.info("✅ 가격대별 파이 차트 생성")
+        
+        # 3. 동별 거래량 차트 (바 차트) - 실제 키 이름 확인
+        district_keys = ['byDistrict', 'statisticsByDong', 'dongStatistics']
+        for key in district_keys:
+            if key in data and data[key]:
+                district_data = data[key]
+                chart_sections.append(self._create_district_chart(district_data))
+                logger.info(f"✅ 동별 차트 생성 (키: {key}, 동 수: {len(district_data)})")
+                break
+        else:
+            logger.warning(f"⚠️ 동별 데이터 없음. 사용 가능한 키: {list(data.keys())}")
+        
+        # 4. 평수별 분포 차트 (도넛 차트)
+        if 'overallStatistics' in data and 'byAreaSize' in data['overallStatistics']:
+            area_data = data['overallStatistics']['byAreaSize']
+            chart_sections.append(self._create_area_size_chart(area_data))
+            logger.info("✅ 평수별 도넛 차트 생성")
+        
+        # 5. 주요 아파트 단지 차트 (가로 바 차트)
+        if 'topApartments' in data:
+            apt_data = data['topApartments']
+            chart_sections.append(self._create_top_apartments_chart(apt_data))
+            logger.info("✅ 주요 아파트 단지 차트 생성")
+        
+        # HTML 조합
+        html_content = base_template + '\n'.join(chart_sections) + '''
+        </div>
+    </div>
+    
+    <script>
+        // 차트 반응형 설정
+        Chart.defaults.responsive = true;
+        Chart.defaults.maintainAspectRatio = false;
+    </script>
+</body>
+</html>'''
+        
+        logger.info(f"🎨 에이전틱 HTML 생성 완료: {len(chart_sections)}개 차트 섹션")
+        return html_content
+    
+    def _create_stats_cards(self, stats: dict) -> str:
+        """전체 통계 카드 생성"""
+        total_count = stats.get('totalTransactionCount', 0)
+        
+        # 평균가격 처리 - 다양한 구조 대응
+        avg_price_raw = stats.get('totalTransactionValue', {})
+        if isinstance(avg_price_raw, dict):
+            avg_price = avg_price_raw.get('mean', avg_price_raw.get('value', 0))
+        else:
+            avg_price = avg_price_raw or 0
+        
+        # 억원 단위로 변환
+        avg_price_billion = avg_price / 100000000 if avg_price > 1000000 else avg_price
+        
+        return f'''
+            <div class="chart-section">
+                <h2>📊 전체 거래 통계</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">{total_count:,}건</div>
+                        <div class="stat-label">총 거래 건수</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{avg_price_billion:.1f}억원</div>
+                        <div class="stat-label">평균 거래가격</div>
+                    </div>
+                </div>
+            </div>
+        '''
+    
+    def _create_price_range_chart(self, price_data: dict) -> str:
+        """가격대별 분포 파이 차트"""
+        labels = list(price_data.keys())
+        values = list(price_data.values())
+        
+        return f'''
+            <div class="chart-section">
+                <h2>💰 가격대별 거래 분포</h2>
+                <div class="chart-container">
+                    <canvas id="priceRangeChart"></canvas>
+                </div>
+                <script>
+                    new Chart(document.getElementById('priceRangeChart'), {{
+                        type: 'pie',
+                        data: {{
+                            labels: {json_module.dumps(labels)},
+                            datasets: [{{
+                                data: {json_module.dumps(values)},
+                                backgroundColor: [
+                                    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'
+                                ]
+                            }}]
+                        }},
+                        options: {{
+                            plugins: {{
+                                legend: {{ position: 'bottom' }}
+                            }}
+                        }}
+                    }});
+                </script>
+            </div>
+        '''
+    
+    def _create_district_chart(self, district_data: dict) -> str:
+        """동별 거래량 바 차트"""
+        districts = list(district_data.keys())
+        
+        # 실제 데이터 구조에 맞게 추출
+        counts = []
+        avg_prices = []
+        
+        for dong in districts:
+            dong_info = district_data[dong]
+            
+            # 거래 건수 추출
+            count = dong_info.get('transactionCount', dong_info.get('count', 0))
+            counts.append(count)
+            
+            # 평균 가격 추출 (다양한 구조 대응)
+            avg_price_data = dong_info.get('averagePrice', dong_info.get('avgPrice', 0))
+            if isinstance(avg_price_data, dict):
+                avg_price = avg_price_data.get('value', 0)
+            else:
+                avg_price = avg_price_data or 0
+            
+            # 억원 단위로 변환
+            avg_price_billion = avg_price / 100000000 if avg_price > 1000000 else avg_price
+            avg_prices.append(avg_price_billion)
+        
+        return f'''
+            <div class="chart-section">
+                <h2>🏘️ 동별 거래 현황</h2>
+                <div class="chart-container">
+                    <canvas id="districtChart"></canvas>
+                </div>
+                <script>
+                    new Chart(document.getElementById('districtChart'), {{
+                        type: 'bar',
+                        data: {{
+                            labels: {json_module.dumps(districts)},
+                            datasets: [{{
+                                label: '거래 건수',
+                                data: {json_module.dumps(counts)},
+                                backgroundColor: '#667eea',
+                                yAxisID: 'y'
+                            }}, {{
+                                label: '평균 가격 (억원)',
+                                data: {json_module.dumps(avg_prices)},
+                                backgroundColor: '#764ba2',
+                                type: 'line',
+                                yAxisID: 'y1'
+                            }}]
+                        }},
+                        options: {{
+                            scales: {{
+                                y: {{ type: 'linear', position: 'left' }},
+                                y1: {{ type: 'linear', position: 'right', grid: {{ drawOnChartArea: false }} }}
+                            }}
+                        }}
+                    }});
+                </script>
+            </div>
+        '''
+    
+    def _create_area_size_chart(self, area_data: dict) -> str:
+        """평수별 분포 도넛 차트"""
+        labels = list(area_data.keys())
+        values = list(area_data.values())
+        
+        return f'''
+            <div class="chart-section">
+                <h2>📐 평수별 거래 분포</h2>
+                <div class="chart-container">
+                    <canvas id="areaSizeChart"></canvas>
+                </div>
+                <script>
+                    new Chart(document.getElementById('areaSizeChart'), {{
+                        type: 'doughnut',
+                        data: {{
+                            labels: {json_module.dumps(labels)},
+                            datasets: [{{
+                                data: {json_module.dumps(values)},
+                                backgroundColor: [
+                                    '#FF9F43', '#10AC84', '#EE5A52', '#5F27CD', '#00D2D3'
+                                ]
+                            }}]
+                        }},
+                        options: {{
+                            cutout: '50%',
+                            plugins: {{
+                                legend: {{ position: 'right' }}
+                            }}
+                        }}
+                    }});
+                </script>
+            </div>
+        '''
+    
+    def _create_top_apartments_chart(self, apt_data: list) -> str:
+        """주요 아파트 단지 가로 바 차트"""
+        names = [apt['name'] for apt in apt_data[:5]]  # 상위 5개만
+        counts = [apt['count'] for apt in apt_data[:5]]
+        
+        return f'''
+            <div class="chart-section">
+                <h2>🏢 주요 아파트 단지 거래량</h2>
+                <div class="chart-container">
+                    <canvas id="topApartmentsChart"></canvas>
+                </div>
+                <script>
+                    new Chart(document.getElementById('topApartmentsChart'), {{
+                        type: 'bar',
+                        data: {{
+                            labels: {json_module.dumps(names)},
+                            datasets: [{{
+                                label: '거래 건수',
+                                data: {json_module.dumps(counts)},
+                                backgroundColor: '#48CAE4',
+                                borderColor: '#0077B6',
+                                borderWidth: 1
+                            }}]
+                        }},
+                        options: {{
+                            indexAxis: 'y',
+                            plugins: {{
+                                legend: {{ display: false }}
+                            }}
+                        }}
+                    }});
+                </script>
+            </div>
+        '''
 
 
 class MCPToolDiscovery:
@@ -914,74 +1266,33 @@ class TrueAgenticWorkflow:
         if not messages:
             query_lower = user_query.lower()
             
-            # 🔥 부동산/MCP 관련 요청인지 먼저 판단
-            realestate_keywords = [
-                '부동산', '아파트', '매매', '전월세', '임대', '거래', '지역', '구', '동', 
-                '강동구', '강남구', '서초구', '송파구', '영등포구', '마포구',
-                '분석', '현황', '트렌드', '시장', '가격', '리포트', '오피스텔',
-                '단독주택', '연립', '상업용', '법정동', '지역코드'
+            # 일반적인 분석 키워드 체크
+            analysis_keywords = [
+                '분석', '리포트', '시각화', '차트', '데이터', '통계', 
+                '트렌드', '패턴', '비교', '현황', '성과', '지표'
             ]
             
-            is_realestate_query = any(keyword in query_lower for keyword in realestate_keywords)
+            is_analysis_query = any(keyword in query_lower for keyword in analysis_keywords)
             
-            if not is_realestate_query:
-                # 🔥 일반적인 질문 - MCP 도구 사용 없이 직접 답변
-                specific_prompt = f"""사용자가 "{user_query}"라고 질문했습니다.
-
-이는 부동산 분석과 관련이 없는 일반적인 질문입니다. 
-MCP 도구를 사용하지 말고, 일반적인 지식으로 친절하게 답변해주세요.
-
-도구를 호출하지 말고 직접 텍스트로 답변하세요."""
-            
-            # 🔥 부동산 관련 요청 - 에이전틱 워크플로우 시작
-            elif any(keyword in query_lower for keyword in ['지역 코드', '지역코드', '법정동']):
+            if is_analysis_query:
                 specific_prompt = f"""사용자 요청: "{user_query}"
 
-부동산 지역 코드 검색 요청입니다. 
+데이터 분석 요청입니다.
 
-목표: 완전한 부동산 분석 리포트 생성
-단계: 지역코드 검색 → 데이터 수집 → 분석 → HTML 리포트 생성
+목표: 완전한 데이터 분석 리포트 생성
+워크플로우:
+1. 적절한 MCP 도구 선택 및 데이터 수집
+2. 데이터 분석 수행
+3. HTML 리포트 생성
 
-첫 번째 단계로 get_region_codes 도구를 호출하세요."""
-            
-            elif any(keyword in query_lower for keyword in ['아파트', '매매', '전월세', '부동산']):
-                specific_prompt = f"""사용자 요청: "{user_query}"
-
-부동산 거래 데이터 분석 요청입니다.
-
-목표: 완전한 부동산 분석 리포트 생성
-계획:
-1. 지역 코드 검색 (get_region_codes)
-2. 아파트 거래 데이터 수집 (get_apt_trade_data) 
-3. 데이터 분석 (analyze_apartment_trade)
-4. HTML 리포트 생성 및 테스트 (test_html_report)
-
-첫 번째 단계로 get_region_codes 도구를 호출하여 시작하세요."""
-            
-            elif any(keyword in query_lower for keyword in ['분석', '현황', '트렌드', '리포트']):
-                specific_prompt = f"""사용자 요청: "{user_query}"
-
-부동산 시장 분석 및 리포트 생성 요청입니다.
-
-목표: 완전한 부동산 분석 리포트 생성
-전체 워크플로우:
-1. 지역 코드 검색 (get_region_codes)
-2. 거래 데이터 수집 (get_apt_trade_data)
-3. 심층 분석 (analyze_apartment_trade) 
-4. HTML 리포트 생성 및 브라우저 테스트 (test_html_report)
-
-모든 단계를 완료할 때까지 계속 진행하세요. 첫 번째로 get_region_codes 도구를 호출하세요."""
+가용한 도구들을 활용하여 분석을 시작하세요."""
             
             else:
-                # 부동산 관련이지만 구체적이지 않은 경우
-                specific_prompt = f"""사용자 요청: "{user_query}"
+                # 일반적인 질문 - 직접 답변
+                specific_prompt = f"""사용자가 "{user_query}"라고 질문했습니다.
 
-부동산 관련 요청으로 판단됩니다.
-
-목표: 사용자 요청에 맞는 완전한 분석 및 리포트 생성
-워크플로우: 지역코드 → 데이터수집 → 분석 → 리포트생성
-
-첫 번째로 get_region_codes 도구를 호출하여 시작하세요."""
+가용한 MCP 도구들을 활용하여 적절한 분석이나 답변을 제공해주세요.
+필요시 도구를 호출하여 데이터를 수집하고 분석하세요."""
 
             messages = [HumanMessage(content=specific_prompt)]
         
@@ -1014,26 +1325,18 @@ MCP 도구를 사용하지 말고, 일반적인 지식으로 친절하게 답변
 
 즉시 analyze_apartment_trade 도구를 호출하세요."""
                 
-                elif "분석" in content or "평균" in content:
+                elif "분석" in content or "평균" in content or "overallStatistics" in content:
                     # 분석이 완료되었으면 HTML 리포트 생성
-                    context_prompt = f"""데이터 분석이 완료되었습니다.
+                    context_prompt = f"""데이터 분석이 완료되었습니다!
 
-최종 단계: HTML 리포트 생성
-분석 결과를 바탕으로 완전한 HTML 리포트를 생성하세요.
+최종 단계: 풍부한 HTML 리포트 생성
+분석 결과를 test_html_report 도구에 전달하여 Chart.js 기반의 풍부한 시각화 리포트를 생성하세요.
 
-다음 형식으로 HTML 코드를 직접 작성하세요:
-```html
-<!DOCTYPE html>
-<html>
-<head><title>부동산 분석 리포트</title></head>
-<body>
-<h1>강동구/서초구 아파트 매매 분석 리포트</h1>
-[분석 결과 내용 포함]
-</body>
-</html>
-```
+즉시 test_html_report 도구를 호출하세요:
+- analysis_data 매개변수에 방금 얻은 분석 결과 JSON을 전달하세요
+- 이 도구가 기존 HTMLValidationAgent를 사용해서 풍부한 차트가 포함된 HTML을 생성합니다
 
-HTML 코드를 직접 생성하세요. 도구를 호출하지 말고 HTML을 작성하세요."""
+지금 바로 test_html_report 도구를 호출하세요!"""
                 
                 else:
                     # 일반적인 진행
@@ -1243,8 +1546,8 @@ HTML 코드를 직접 생성하세요. 도구를 호출하지 말고 HTML을 작
                             await streaming_callback.send_tool_abort(tool_name, "사용자 요청으로 중단됨")
                             return "❌ 사용자 요청으로 도구 실행이 중단되었습니다."
                         
-                        # 원본 도구 실행
-                        result = await current_tool._original_arun(*args, **kwargs)
+                        # 🔥 도구 실행을 래핑해서 중간에도 중단 체크
+                        result = await self._run_tool_with_abort_check(current_tool, streaming_callback, *args, **kwargs)
                         
                         # 실행 완료 후에도 중단 체크
                         if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
@@ -1272,6 +1575,35 @@ HTML 코드를 직접 생성하세요. 도구를 호출하지 말고 HTML을 작
             
             # 메서드 교체 - 🔥 각 도구마다 고유한 래퍼 생성
             tool._arun = create_wrapped_arun(tool, i)
+    
+    async def _run_tool_with_abort_check(self, tool, streaming_callback, *args, **kwargs):
+        """🔥 중단 체크가 가능한 도구 실행"""
+        try:
+            # 실행 전 중단 체크
+            if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
+                logger.info(f"🛑 도구 {tool.name} 실행 전 중단 감지")
+                await streaming_callback.send_tool_abort(tool.name, "중단됨")
+                return "❌ 사용자 요청으로 중단되었습니다."
+            
+            # 실제 도구 실행
+            result = await tool._original_arun(*args, **kwargs)
+            
+            # 실행 후 중단 체크
+            if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
+                logger.info(f"🛑 도구 {tool.name} 실행 후 중단 감지")
+                await streaming_callback.send_tool_abort(tool.name, "중단됨")
+                return "❌ 사용자 요청으로 중단되었습니다."
+            
+            return result
+            
+        except Exception as e:
+            # 중단 요청인지 확인
+            if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
+                logger.info(f"🛑 도구 {tool.name} 예외 발생 시 중단 감지")
+                await streaming_callback.send_tool_abort(tool.name, "중단됨")
+                return "❌ 사용자 요청으로 중단되었습니다."
+            else:
+                raise  # 일반 오류는 재발생
 
     async def run(self, user_query: str) -> Dict[str, Any]:
         """에이전틱 워크플로우 실행 (기본 버전)"""
@@ -1335,6 +1667,32 @@ HTML 코드를 직접 생성하세요. 도구를 호출하지 말고 HTML을 작
                 "messages": [],
                 "available_tools": []
             }
+
+    def _analyze_user_query(self, query: str) -> str:
+        """사용자 쿼리 분석하여 적절한 워크플로우 결정"""
+        
+        query_lower = query.lower()
+        
+        # 일반적인 분석 키워드 체크
+        analysis_keywords = [
+            '분석', '리포트', '시각화', '차트', '데이터', '통계', 
+            '트렌드', '패턴', '비교', '현황', '성과', '지표'
+        ]
+        
+        if any(keyword in query_lower for keyword in analysis_keywords):
+            return f"""
+데이터 분석 요청입니다.
+요청 내용: {query}
+목표: 완전한 데이터 분석 리포트 생성
+사용할 도구: 가용한 MCP 도구들을 활용하여 데이터를 수집하고 분석
+"""
+        
+        # 기본 응답
+        return f"""
+일반적인 데이터 분석 요청입니다.
+요청 내용: {query}
+목표: 요청에 맞는 적절한 분석 수행
+"""
 
 
 # 기존 클래스명 유지 (하위 호환성)
