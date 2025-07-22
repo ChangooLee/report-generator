@@ -16,13 +16,19 @@ class ModelType(Enum):
 
 class OpenRouterClient:
     def __init__(self):
-        self.base_url = os.getenv('VLLM_API_BASE_URL', 'https://openrouter.ai/api/v1')
-        self.api_key = os.getenv('VLLM_API_KEY')
+        # 환경변수 재로드 시도 - override=True로 강제 갱신
+        load_dotenv(override=True)
+        
+        self.base_url = os.getenv('LLM_API_BASE_URL') or os.getenv('VLLM_API_BASE_URL', 'https://openrouter.ai/api/v1')
+        self.api_key = os.getenv('LLM_API_KEY') or os.getenv('VLLM_API_KEY') or os.getenv('CLAUDE_API_KEY')
         self.qwen_model = os.getenv('VLLM_MODEL_NAME', 'Qwen/Qwen2.5-Coder-32B-Instruct')
-        self.claude_model = os.getenv('CLAUDE_MODEL_NAME', 'anthropic/claude-sonnet-4')
+        self.llm_model = os.getenv('LLM_NAME', 'deepseek/deepseek-chat-v3-0324')
+        
+        logger.info(f"🔑 OpenRouter API 키 로드: {'✅ 성공' if self.api_key else '❌ 실패'}")
+        logger.info(f"🔑 API 키 앞 10자리: {self.api_key[:10] if self.api_key else 'None'}...")
         
         if not self.api_key:
-            raise ValueError("VLLM_API_KEY 환경 변수가 설정되지 않았습니다.")
+            raise ValueError("VLLM_API_KEY 또는 CLAUDE_API_KEY 환경 변수가 설정되지 않았습니다.")
         
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -45,7 +51,7 @@ class OpenRouterClient:
     async def generate_code_stream(self, prompt: str, model_type: ModelType = ModelType.QWEN_CODER) -> AsyncIterator[str]:
         """코드 생성 (스트리밍 버전)"""
         try:
-            model_name = self.qwen_model if model_type == ModelType.QWEN_CODER else self.claude_model
+            model_name = self.qwen_model if model_type == ModelType.QWEN_CODER else self.llm_model
             system_prompt = self._get_system_prompt(model_type)
             
             messages = [
@@ -105,13 +111,13 @@ class OpenRouterClient:
         if prompt == "test":
             return "healthy"
         
-        model_name = self.claude_model if model_type == ModelType.CLAUDE_SONNET else self.qwen_model
+        model_name = self.llm_model if model_type == ModelType.CLAUDE_SONNET else self.qwen_model
         
         payload = {
             "model": model_name,
             "messages": [
                 {
-                    "role": "user",
+                    "role": "user", 
                     "content": prompt
                 }
             ],
@@ -287,6 +293,6 @@ class OpenRouterClient:
         """현재 설정된 모델 정보 반환"""
         return {
             "qwen_model": self.qwen_model,
-            "claude_model": self.claude_model,
+            "llm_model": self.llm_model,
             "base_url": self.base_url
         } 

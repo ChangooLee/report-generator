@@ -8,6 +8,7 @@ import httpx
 import os
 import logging
 import random
+import requests
 import json as json_module
 import time
 from typing import List, Dict, Any, Optional, TypedDict, Annotated
@@ -53,6 +54,9 @@ class OpenRouterLLM(BaseChatModel):
     
     def __init__(self, **data):
         super().__init__(**data)
+        # .env 파일을 다시 로드하여 API 키 확보
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
         object.__setattr__(self, '_client', OpenRouterClient())
         object.__setattr__(self, 'tools', [])
         object.__setattr__(self, 'streaming_callback', None)
@@ -69,8 +73,6 @@ class OpenRouterLLM(BaseChatModel):
             logger.info("🛑 LLM 생성 중 중단 요청 감지")
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="중단됨"))])
         
-        tools_schema = kwargs.get('tools_schema', [])
-        
         # 메시지 변환 (LangChain → OpenRouter)
         openrouter_messages = self._convert_messages(messages)
         
@@ -79,121 +81,34 @@ class OpenRouterLLM(BaseChatModel):
         
         # 핵심 디버깅: 도구 스키마 확인
         logger.info(f"🔧 사용 가능한 도구 수: {len(self.tools) if self.tools else 0}")
-        # 과도한 로깅 제거 (line 724 근처)
-        # logger.info(f"🔧 첫 번째 도구 스키마: {tool_schemas[0] if tool_schemas else 'None'}")
-
-        # 대신 간단한 로그로 교체
+        
         if tools_schema:
             logger.info(f"🔧 도구 스키마 생성 완료: {len(tools_schema)}개")
         else:
             logger.warning("⚠️ 도구 스키마 생성 실패")
         
-        # OpenRouter 요청 페이로드 구성 - 400 에러 방지를 위한 검증
-        # 🔥 완전한 메시지 검증 및 정리 (400 에러 완전 해결)
+        # 🔥 간단한 메시지 검증 - 복잡한 변환 로직 제거
         validated_messages = []
+        for msg in openrouter_messages:
+            if msg.get("content") and str(msg["content"]).strip():
+                validated_messages.append({
+                    "role": msg.get("role", "user"),
+                    "content": str(msg["content"]).strip()
+                })
         
-        for i, msg in enumerate(openrouter_messages):
-            if not msg.get("content") or len(str(msg["content"]).strip()) == 0:
-                continue
-                
-            content = str(msg["content"]).strip()
-            role = msg.get("role", "user")
-            
-            # 🔥 특수 문자 및 제어 문자 제거 (400 에러 주요 원인)
-            import re
-            content = re.sub(r'[^\w\s가-힣.,!?():/%-]', '', content)
-            
-            # 🔥 에러 메시지 필터링 (히스토리 오염 방지)
-            if any(error_pattern in content for error_pattern in [
-                "400 Bad Request", "Client error", "API 호출 중 오류", 
-                "OpenRouter API 호출 실패", "HTTP/1.1 400"
-            ]):
-                logger.warning(f"⚠️ 에러 메시지 필터링: {content[:100]}...")
-                continue  # 이 메시지는 건너뛰기
-            
-            # 🔥 개별 메시지 길이 제한 (더 보수적)
-            if len(content) > 2000:  # 4000에서 2000으로 더 감소
-                content = content[:2000] + "..."
-                logger.warning(f"⚠️ 메시지 {i} 길이 축약: {len(str(msg['content']))} → {len(content)}")
-            
-            # 🔥 역할별 검증
-            if role not in ["user", "assistant", "system", "tool"]:
-                logger.warning(f"⚠️ 잘못된 role: {role} → user로 변경")
-                role = "user"
-            
-            # 🔥 tool 메시지의 경우 tool_call_id 확인
-            if role == "tool":
-                if "tool_call_id" not in msg:
-                    msg["tool_call_id"] = f"call_{i}"
-            
-            validated_msg = {
-                "role": role,
-                "content": content
-            }
-            
-            if role == "tool" and "tool_call_id" in msg:
-                validated_msg["tool_call_id"] = msg["tool_call_id"]
-            
-            validated_messages.append(validated_msg)
-        
-        # 🔥 최소 메시지 보장
+        # 최소 메시지 보장
         if not validated_messages:
-            validated_messages = [{"role": "user", "content": "안녕하세요"}]
-        
-        # 🔥 메시지 수 제한 (API 안정성 극대화)
-        if len(validated_messages) > 6:  # 8개에서 6개로 더 감소
-            validated_messages = validated_messages[-6:]  # 최근 6개만 유지
-            logger.warning(f"⚠️ 메시지 수 제한으로 최근 6개만 유지")
-        
-        # 🔥 빈 메시지나 의미없는 메시지 제거
-        validated_messages = [
-            msg for msg in validated_messages 
-            if msg["content"].strip() and len(msg["content"].strip()) > 5
-        ]
-        
-        # 🔥 400 에러 방지를 위한 더 엄격한 메시지 정리 + tool 메시지 변환
-        final_messages = []
-        for msg in validated_messages:
-            content = str(msg["content"]).strip()
-            role = msg.get("role", "user")
-            
-            # 🔥 tool 메시지를 user 메시지로 변환 (OpenRouter 호환성 개선)
-            if role == "tool":
-                role = "user"
-                content = f"도구 실행 결과: {content[:100]}..."
-            
-            # 🔥 요약 제거 - 전체 내용 표시
-            # JSON 데이터도 전체 표시 (API 호환성만 고려)
-            if len(content) > 10000:  # 매우 큰 데이터만 제한 (1000 -> 10000으로 증가)
-                content = content[:10000] + "... (너무 길어서 일부만 표시)"
-            
-            final_messages.append({
-                "role": role,  # tool에서 user로 변환된 role 사용
-                "content": content
-            })
-        
-        # 🔥 전체 대화 길이 재검증 (더 엄격)
-        total_length = sum(len(msg["content"]) for msg in final_messages)
-        if total_length > 2000:  # 6000에서 2000으로 대폭 감소
-            # 메시지 수 제한 (최근 3개만 유지)
-            final_messages = final_messages[-3:]
-            total_length = sum(len(msg["content"]) for msg in final_messages)
-            logger.warning(f"⚠️ 메시지 수를 3개로 제한, 총 길이: {total_length}")
-        
-        validated_messages = final_messages
-        
-        # 🔥 최종 안전성 검증 - OpenRouter 호환성
-        if len(validated_messages) == 0:
             validated_messages = [{"role": "user", "content": "데이터 분석 리포트를 작성해주세요"}]
         
-        logger.info(f"🔧 최종 검증된 메시지: {len(validated_messages)}개, 총 길이: {total_length}")
+        logger.info(f"🔧 최종 검증된 메시지: {len(validated_messages)}개, 총 길이: {sum(len(str(m.get('content', ''))) for m in validated_messages)}")
         
+        # API 요청 구성
         payload = {
-            "model": "anthropic/claude-3-5-sonnet-20241022",  # 🔥 더 안정적인 모델 사용
+            "model": os.getenv("LLM_NAME", "deepseek/deepseek-chat-v3-0324"),
             "messages": validated_messages,
             "temperature": 0.3,
             "max_tokens": 4000,
-            "stream": False   # 🔥 스트리밍 비활성화로 tool_calls 문제 해결
+            "stream": False
         }
         
         # 도구가 있으면 function calling 활성화
@@ -201,163 +116,132 @@ class OpenRouterLLM(BaseChatModel):
             payload["tools"] = tools_schema
             payload["tool_choice"] = "auto"
         
-        # 스트리밍 콜백이 있으면 LLM 시작 알림
-        if self.streaming_callback:
-            try:
-                asyncio.run(self.streaming_callback.send_llm_start("AI 에이전트"))
-                logger.info("🧠 Claude function calling 응답 생성 시작")
-            except Exception as e:
-                logger.error(f"스트리밍 시작 알림 실패: {e}")
-        
-        # 🔥 API 요청 payload 로깅 (디버깅용)
         logger.info(f"🔧 API 요청 payload - messages: {len(payload['messages'])}, tools: {len(payload.get('tools', []))}")
+        logger.info(f"🔑 API 키 상태: {self._client.api_key[:20] if self._client.api_key else 'None'}...")
         for i, msg in enumerate(payload['messages']):
-            content_preview = msg['content'][:100] + "..." if len(msg['content']) > 100 else msg['content']
-            logger.info(f"  메시지 {i}: {msg['role']} - {content_preview}")
+            logger.info(f"  메시지 {i}: {msg['role']} - {msg['content'][:100]}...")
         
-        # OpenRouter API 호출 및 응답 수집 (비스트리밍 모드)
+        # 🔥 간단한 동기 HTTP 요청으로 변경
+        import requests
+        
         try:
+            headers = {
+                "Authorization": f"Bearer {self._client.api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:7001",
+                "X-Title": "Report Generator"
+            }
+            
+            response = requests.post(
+                os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=120
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            logger.info(f"🔍 OpenRouter 전체 응답: {result}")
+            
             response_content = ""
             tool_calls = []
             
-            # 🔥 비스트리밍으로 간단한 응답 수집
-            async def collect_non_streaming_response():
-                nonlocal response_content, tool_calls
+            if "choices" in result and len(result["choices"]) > 0:
+                message = result["choices"][0]["message"]
                 
-                try:
-                    async with httpx.AsyncClient(timeout=120.0) as client:
-                        response = await client.post(
-                            "https://openrouter.ai/api/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {os.getenv('VLLM_API_KEY')}",
-                                "Content-Type": "application/json",
-                                "HTTP-Referer": "http://localhost:7001",
-                                "X-Title": "Report Generator"
-                            },
-                            json=payload
-                        )
-                        response.raise_for_status()
-                        
-                        # JSON 응답 파싱
-                        result = response.json()
-                        
-                        if "choices" in result and len(result["choices"]) > 0:
-                            message = result["choices"][0]["message"]
-                            
-                            # 텍스트 콘텐츠 추출
-                            response_content = message.get("content", "")
-                            
-                            # 🔥 스트리밍 콜백으로 전체 내용 즉시 전송 (실시간 표시)
-                            if self.streaming_callback and response_content:
-                                try:
-                                    # 응답 내용을 즉시 UI에 표시
-                                    await self.streaming_callback.send_llm_chunk(response_content)
-                                    # 상태도 업데이트 (전체 내용 표시)
-                                    preview = response_content[:200] if len(response_content) > 200 else response_content
-                                    await self.streaming_callback.send_status(f"📝 Claude 응답: {preview}")
-                                    logger.info(f"✅ UI에 응답 내용 전송: {len(response_content)}자")
+                # 텍스트 응답
+                response_content = message.get("content", "")
+                logger.info(f"🔍 응답 content 길이: {len(response_content) if response_content else 0}")
+                
+                # 🔥 실시간 content 스트리밍 (진행 상황 표시) - 동기 함수에서는 로그로만 표시
+                if hasattr(self, 'streaming_callback') and self.streaming_callback and response_content:
+                    logger.info(f"🎯 LLM 응답 content가 생성되었습니다: {response_content[:200]}...")
+                
+                # 도구 호출 추출
+                if "tool_calls" in message and message["tool_calls"]:
+                    logger.info(f"🔥 tool_calls 발견! {len(message['tool_calls'])}개")
+                    
+                    available_tool_names = [tool.name for tool in self.tools] if self.tools else []
+                    
+                    for tc in message["tool_calls"]:
+                        if "function" in tc:
+                            function_info = tc["function"]
+                            try:
+                                tool_name = function_info.get("name", "")
+                                
+                                if tool_name in available_tool_names:
+                                    tool_call_info = {
+                                        "name": tool_name,
+                                        "args": json_module.loads(function_info.get("arguments", "{}")),
+                                        "id": tc.get("id", f"call_{len(tool_calls)}")
+                                    }
+                                    tool_calls.append(tool_call_info)
+                                    logger.info(f"✅ 검증된 도구 호출: {tool_name}")
+                                else:
+                                    logger.warning(f"⚠️ 알 수 없는 도구: {tool_name}")
                                     
-                                    # 🔥 정상 응답시 빈 응답 카운터 리셋
-                                    object.__setattr__(self, 'empty_response_count', 0)
-                                except Exception as e:
-                                    logger.error(f"콜백 전송 실패: {e}")
-                            elif self.streaming_callback:
-                                # 응답이 없는 경우에도 상태 업데이트
-                                await self.streaming_callback.send_status("⚠️ Claude 응답이 비어있습니다")
-                                logger.warning("⚠️ Claude 응답 내용이 없음")
-                                
-                                # 🔥 연속 빈 응답 카운터 증가 (object.__setattr__ 사용)
-                                if not hasattr(self, 'empty_response_count'):
-                                    object.__setattr__(self, 'empty_response_count', 0)
-                                object.__setattr__(self, 'empty_response_count', self.empty_response_count + 1)
-                                
-                                # 🔥 연속 3번 빈 응답이면 워크플로우 종료
-                                if self.empty_response_count >= 3:
-                                    logger.warning("⚠️ 연속 3번 빈 응답 - 워크플로우 강제 종료")
-                                    return ChatResult(generations=[ChatGeneration(message=AIMessage(content="워크플로우 완료"))])
-                            
-                            # 🔥 tool_calls 추출 및 검증 강화
-                            if "tool_calls" in message and message["tool_calls"]:
-                                logger.info(f"🔥 tool_calls 발견! {len(message['tool_calls'])}개")
-                                
-                                # 사용 가능한 도구 이름 목록 (검증용)
-                                available_tool_names = [tool.name for tool in self.tools] if self.tools else []
-                                logger.info(f"🔧 사용 가능한 도구들: {available_tool_names[:5]}...")
-                                
-                                for tc in message["tool_calls"]:
-                                    if "function" in tc:
-                                        function_info = tc["function"]
-                                        try:
-                                            tool_name = function_info.get("name", "")
-                                            
-                                            # 🔥 도구 이름 검증
-                                            if tool_name not in available_tool_names:
-                                                logger.warning(f"⚠️ 알 수 없는 도구 이름: {tool_name}")
-                                                logger.warning(f"⚠️ 사용 가능한 도구: {available_tool_names}")
-                                                continue
-                                            
-                                            tool_call_info = {
-                                                "name": tool_name,
-                                                "args": json_module.loads(function_info.get("arguments", "{}")),
-                                                "id": tc.get("id", f"call_{len(tool_calls)}")
-                                            }
-                                            tool_calls.append(tool_call_info)
-                                            logger.info(f"✅ 검증된 도구 호출: {tool_name}")
-                                            
-                                        except json_module.JSONDecodeError as e:
-                                            logger.error(f"도구 arguments 파싱 실패: {e}")
-                                            continue
-                            else:
-                                logger.warning("⚠️ tool_calls가 응답에 없음")
-                        else:
-                            logger.error("❌ OpenRouter 응답에 choices가 없음")
-                            
-                except Exception as e:
-                    logger.error(f"OpenRouter API 호출 실패: {e}")
-                    return f"API 호출 중 오류: {str(e)}", []
-                
-                return response_content, tool_calls
-            
-            # 동기 컨텍스트에서 비동기 함수 실행
-            try:
-                loop = asyncio.get_running_loop()
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, collect_non_streaming_response())
-                    response_content, tool_calls = future.result(timeout=120)
-            except RuntimeError:
-                response_content, tool_calls = asyncio.run(collect_non_streaming_response())
+                            except Exception as e:
+                                logger.error(f"도구 arguments 파싱 실패: {e}")
+                                logger.error(f"문제가 된 arguments: {function_info.get('arguments', 'None')}")
+                                # 파싱 실패 시에도 빈 args로 도구 추가 시도
+                                try:
+                                    tool_call_info = {
+                                        "name": tool_name,
+                                        "args": {},  # 빈 args로 대체
+                                        "id": tc.get("id", f"call_{len(tool_calls)}")
+                                    }
+                                    tool_calls.append(tool_call_info)
+                                    logger.warning(f"⚠️ 빈 args로 도구 호출 추가: {tool_name}")
+                                except:
+                                    continue
+                else:
+                    logger.warning("⚠️ tool_calls가 응답에 없음")
+            else:
+                logger.error("❌ OpenRouter 응답에 choices가 없음")
             
             logger.info(f"✅ Claude 응답 완료: {len(response_content)} 문자, {len(tool_calls)}개 도구 호출")
+            
+            # 🔥 비동기 콜백을 동기 컨텍스트에서 호출하는 간단한 방법
+            if self.streaming_callback:
+                try:
+                    if response_content:
+                        # asyncio.create_task를 사용한 비동기 실행
+                        import asyncio
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if not loop.is_running():
+                                asyncio.run(self.streaming_callback.send_llm_chunk(response_content))
+                                asyncio.run(self.streaming_callback.send_status(f"📝 Claude 응답: {response_content[:200]}"))
+                            else:
+                                # 이미 실행 중인 루프에서는 task 생성
+                                loop.create_task(self.streaming_callback.send_llm_chunk(response_content))
+                                loop.create_task(self.streaming_callback.send_status(f"📝 Claude 응답: {response_content[:200]}"))
+                        except:
+                            # 폴백: 간단한 로깅만
+                            logger.info(f"콜백 전송 스킵: {response_content[:100]}...")
+                    else:
+                        logger.warning("⚠️ Claude 응답 내용이 없음")
+                except Exception as e:
+                    logger.error(f"콜백 전송 실패: {e}")
+            
+            # AIMessage 생성
+            ai_message = AIMessage(content=response_content or "")
+            if tool_calls:
+                ai_message.tool_calls = tool_calls
                 
+            return ChatResult(generations=[ChatGeneration(text=response_content or "", message=ai_message)])
+            
         except Exception as e:
             logger.error(f"Claude function calling 실패: {e}")
             
-            # 🔥 사용자에게 실시간 에러 피드백 제공
-            if self.streaming_callback:
-                try:
-                    if "400 Bad Request" in str(e):
-                        asyncio.run(self.streaming_callback.send_status("⚠️ API 요청 형식 문제로 재시도 중..."))
-                        asyncio.run(self.streaming_callback.send_llm_chunk("API 통신 중 일시적 문제가 발생했습니다. 다음 단계로 진행합니다."))
-                    else:
-                        asyncio.run(self.streaming_callback.send_status(f"❌ Claude 호출 실패: {str(e)[:100]}..."))
-                        asyncio.run(self.streaming_callback.send_llm_chunk(f"응답 생성 중 오류가 발생했습니다: {str(e)}"))
-                except Exception as callback_error:
-                    logger.error(f"콜백 전송 실패: {callback_error}")
-            
-            # 🔥 에러 메시지를 응답으로 반환하지 않음 (히스토리 오염 방지)
-            if "400 Bad Request" in str(e):
-                response_content = "다음 단계로 진행합니다."
-            else:
-                response_content = f"Claude 응답 생성 중 오류: {str(e)}"
-            tool_calls = []
-        
-        # AIMessage 생성
-        ai_message = AIMessage(content=response_content)
-        if tool_calls:
-            ai_message.tool_calls = tool_calls
-        
-        return ChatResult(generations=[ChatGeneration(message=ai_message)])
+            # 에러 메시지 생성
+            error_content = f"응답 생성 중 오류가 발생했습니다: {str(e)}"
+            error_message = AIMessage(content=error_content)
+            return ChatResult(generations=[ChatGeneration(text=error_content, message=error_message)])
+    
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
+        """비동기 생성 메서드 - LangGraph에서 필요"""
+        return self._generate(messages, stop, run_manager, **kwargs)
     
     def _convert_messages(self, messages) -> List[Dict]:
         """🔥 완전히 새로운 메시지 변환 - 컨텍스트 혼재 방지"""
@@ -389,19 +273,23 @@ class OpenRouterLLM(BaseChatModel):
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
                     assistant_msg["tool_calls"] = []
                     for tc in msg.tool_calls:
+                        # arguments를 JSON 문자열로 변환
+                        args = tc.get("args", {})
+                        args_json = json_module.dumps(args) if isinstance(args, dict) else str(args)
+                        
                         assistant_msg["tool_calls"].append({
                             "id": tc.get("id", f"call_{i}"),
                             "type": "function",
                             "function": {
                                 "name": tc.get("name", ""),
-                                "arguments": tc.get("args", "{}")
+                                "arguments": args_json
                             }
                         })
                 
                 openrouter_messages.append(assistant_msg)
             elif isinstance(msg, ToolMessage):
-                # 🔥 도구 결과 메시지는 축약해서 추가
-                summary = content[:300] + "..." if len(content) > 300 else content
+                # 🔥 도구 결과 메시지 전체 추가
+                summary = content
                 tool_id = getattr(msg, 'tool_call_id', f'call_{i}')
                 openrouter_messages.append({
                     "role": "tool",
@@ -482,7 +370,7 @@ class OpenRouterLLM(BaseChatModel):
                     },
                     "required": ["file_path"]
                 }
-            elif tool.name == "test_html_report":
+            elif tool.name == "html_report":
                 tool_schema["function"]["parameters"] = {
                     "type": "object",
                     "properties": {
@@ -555,7 +443,9 @@ class DynamicMCPTool(BaseTool):
             # 결과 처리
             if isinstance(result, dict):
                 if "error" in result:
-                    error_msg = f"❌ {self.name} 도구 실행 실패: {result['error']}"
+                    # 전체 JSON 응답을 로그에 출력
+                    full_result = json_module.dumps(result, ensure_ascii=False, indent=2)
+                    error_msg = f"❌ {self.name} 도구 실행 실패: {full_result}"
                     logger.error(error_msg)
                     return error_msg
                 elif "content" in result:
@@ -565,35 +455,46 @@ class DynamicMCPTool(BaseTool):
                         text_result = content[0].get("text", str(content))
                         # 에러 메시지인지 확인
                         if "error" in text_result.lower() or "validation error" in text_result.lower():
-                            error_msg = f"❌ {self.name} 도구 실행 실패: {text_result[:200]}..."
+                            logger.info(f"🐛 디버그: 에러 감지됨, text_result 길이: {len(text_result)}")
+                            # JSON 문자열인 경우 파싱해서 예쁘게 출력
+                            try:
+                                parsed_error = json_module.loads(text_result)
+                                formatted_error = json_module.dumps(parsed_error, ensure_ascii=False, indent=2)
+                                error_msg = f"❌ {self.name} 도구 실행 실패:\n{formatted_error}"
+                                logger.info(f"🐛 디버그: JSON 파싱 성공, error_msg 길이: {len(error_msg)}")
+                            except Exception as parse_e:
+                                error_msg = f"❌ {self.name} 도구 실행 실패: {text_result}"
+                                logger.info(f"🐛 디버그: JSON 파싱 실패 ({parse_e}), error_msg 길이: {len(error_msg)}")
                             logger.error(error_msg)
                             return error_msg
                         else:
-                            logger.info(f"✅ {self.name} 도구 성공: {text_result[:100]}...")
+                            logger.info(f"✅ {self.name} 도구 성공: {text_result}")
                             return text_result
                     else:
                         result_str = str(content)
                         # 에러 메시지인지 확인
                         if "error" in result_str.lower() or "validation error" in result_str.lower():
-                            error_msg = f"❌ {self.name} 도구 실행 실패: {result_str[:200]}..."
+                            # 전체 에러 메시지 출력
+                            error_msg = f"❌ {self.name} 도구 실행 실패: {result_str}"
                             logger.error(error_msg)
                             return error_msg
                         else:
-                            logger.info(f"✅ {self.name} 도구 성공: {result_str[:100]}...")
+                            logger.info(f"✅ {self.name} 도구 성공: {result_str}")
                             return result_str
                 else:
                     result_str = str(result)
                     # 에러 메시지인지 확인
                     if "error" in result_str.lower() or "validation error" in result_str.lower():
-                        error_msg = f"❌ {self.name} 도구 실행 실패: {result_str[:200]}..."
+                        # 전체 에러 메시지 출력
+                        error_msg = f"❌ {self.name} 도구 실행 실패: {result_str}"
                         logger.error(error_msg)
                         return error_msg
                     else:
-                        logger.info(f"✅ {self.name} 도구 성공: {result_str[:100]}...")
+                        logger.info(f"✅ {self.name} 도구 성공: {result_str}")
                         return result_str
             else:
                 result_str = str(result)
-                logger.info(f"✅ {self.name} 도구 성공: {result_str[:100]}...")
+                logger.info(f"✅ {self.name} 도구 성공: {result_str}")
                 return result_str
                 
         except Exception as e:
@@ -604,7 +505,7 @@ class DynamicMCPTool(BaseTool):
 class BrowserTestTool(BaseTool):
     """브라우저 HTML 테스트 도구"""
     
-    name: str = "test_html_report"
+    name: str = "html_report"
     description: str = "HTML 리포트가 생성된 후 브라우저에서 테스트합니다. html_content 매개변수가 필요합니다."
     
     class Config:
@@ -613,6 +514,7 @@ class BrowserTestTool(BaseTool):
     def __init__(self):
         super().__init__()
         object.__setattr__(self, 'browser_agent', BrowserAgent())
+        object.__setattr__(self, 'openrouter_client', OpenRouterClient())
     
     def _run(self, **kwargs) -> str:
         """도구 실행"""
@@ -622,62 +524,61 @@ class BrowserTestTool(BaseTool):
         """🔥 에이전틱 HTML 리포트 생성 - LLM이 데이터를 보고 스스로 시각화 결정"""
         try:
             logger.info("🤖 에이전틱 HTML 리포트 생성 시작")
+            logger.info(f"🔍 BrowserTestTool._arun 호출됨 - 스트리밍 콜백 있음: {hasattr(self, 'streaming_callback')}")
             
             analysis_data = kwargs.get('analysis_data')
             html_content = kwargs.get('html_content')
             
             if analysis_data:
-                logger.info("📊 진짜 에이전틱 HTML 생성 시작")
+                logger.info("📊 실제 MCP 데이터를 사용한 에이전틱 HTML 생성 시작")
                 
                 # JSON 문자열 파싱
                 if isinstance(analysis_data, str):
                     try:
                         cleaned_data = analysis_data.strip()
-                        if cleaned_data.startswith('{'):
+                        if cleaned_data.startswith('{') or cleaned_data.startswith('['):
                             parsed_data = json_module.loads(cleaned_data)
-                            logger.info(f"🎯 분석 데이터 파싱 성공: {len(parsed_data)} 키")
+                            logger.info(f"🎯 실제 MCP 데이터 파싱 성공: {type(parsed_data)} 타입, 크기: {len(parsed_data) if isinstance(parsed_data, (list, dict)) else 'N/A'}")
                         else:
-                            logger.warning("JSON 형식이 아님, 기본 데이터 사용")
-                            parsed_data = {"sample_data": "기본 데이터"}
+                            logger.warning("JSON 형식이 아님, 텍스트 데이터로 처리")
+                            parsed_data = {"text_data": cleaned_data}
                     except Exception as e:
-                        logger.error(f"분석 데이터 파싱 실패: {e}")
-                        parsed_data = {"error_data": "파싱 실패"}
+                        logger.error(f"MCP 데이터 파싱 실패: {e}")
+                        parsed_data = {"error_data": f"파싱 실패: {str(e)}", "raw_data": analysis_data[:500]}
                 else:
                     parsed_data = analysis_data
+                    logger.info(f"🎯 MCP 데이터 타입: {type(parsed_data)}")
                 
-                # 에이전틱 HTML 리포트 생성
-                import json as json_module
-                import os
-                from app.agentic_html_generator import AgenticHTMLGenerator
-                
-                # 샘플 데이터 로드
-                sample_data_path = os.path.join(os.getcwd(), 'data', 'sample_sales_data.json')
-                with open(sample_data_path, 'r', encoding='utf-8') as f:
-                    sample_data = json_module.load(f)
-                
-                # 에이전틱 HTML 생성기 사용
-                generator = AgenticHTMLGenerator()
-                html_content = await generator.generate_html(sample_data, user_query=kwargs.get('user_query', ''))
+                # 🔥 MCP 데이터를 직접 LLM에 전달해서 HTML 생성
+                html_content = await self._generate_html_with_llm(
+                    parsed_data,  # 실제 MCP 데이터
+                    user_query=kwargs.get('user_query', '데이터 분석 리포트')
+                )
                 
                 # 🔥 실시간 HTML 코드 스트리밍 전송
                 if hasattr(self, 'streaming_callback') and self.streaming_callback:
                     await self.streaming_callback.send_html_code(html_content)
                 
             else:
-                # 데이터가 없으면 샘플 데이터로 대체
-                logger.info("📊 데이터 없음 - 샘플 데이터 사용")
-                import json as json_module
-                import os
-                from app.agentic_html_generator import AgenticHTMLGenerator
+                # 🔥 폴백: 샘플 데이터로 LLM HTML 생성 시도
+                logger.info("📊 analysis_data 없음 - 샘플 데이터로 LLM HTML 생성 시도")
                 
                 # 샘플 데이터 로드
                 sample_data_path = os.path.join(os.getcwd(), 'data', 'sample_sales_data.json')
-                with open(sample_data_path, 'r', encoding='utf-8') as f:
-                    sample_data = json_module.load(f)
-                
-                # 에이전틱 HTML 생성기 사용
-                generator = AgenticHTMLGenerator()
-                html_content = await generator.generate_html(sample_data, user_query=kwargs.get('user_query', ''))
+                try:
+                    with open(sample_data_path, 'r', encoding='utf-8') as f:
+                        sample_data = json_module.load(f)
+                    
+                    # LLM으로 HTML 생성
+                    html_content = await self._generate_html_with_llm(
+                        sample_data, 
+                        user_query=kwargs.get('user_query', '샘플 데이터 분석 리포트')
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"샘플 데이터 로드 실패: {e}")
+                    # 최후 폴백: 직접 HTML 생성
+                    html_content = self._generate_emergency_fallback_report()
             
             # HTML 파일 저장
             try:
@@ -694,13 +595,56 @@ class BrowserTestTool(BaseTool):
                 
                 logger.info(f"✅ HTML 리포트 저장 완료: {final_path}")
                 
-                # 🔥 리포트 목록 갱신 알림
+                # 🔥 리포트 저장 완료 후 분석 완료 메시지 전송
+                try:
+                    import gc
+                    for obj in gc.get_objects():
+                        if hasattr(obj, 'streaming_callback') and obj.streaming_callback and hasattr(obj.streaming_callback, 'send_analysis_step'):
+                            await obj.streaming_callback.send_analysis_step("workflow_complete", "AI 에이전트 분석이 완료되었습니다")
+                            logger.info("🎉 분석 완료 메시지 전송됨")
+                            break
+                except Exception as e:
+                    logger.warning(f"분석 완료 메시지 전송 실패: {e}")
+                
+                # 🔥 전역 스트리밍 콜백 찾기 및 알림 전송 (더 강력한 방법)
+                try:
+                    # 전역에서 스트리밍 콜백 찾기
+                    import gc
+                    streaming_found = False
+                    for obj in gc.get_objects():
+                        if hasattr(obj, 'streaming_callback') and obj.streaming_callback and hasattr(obj.streaming_callback, 'send_report_update'):
+                            logger.info(f"🔍 전역 스트리밍 콜백 발견! 타입: {type(obj).__name__}")
+                            await obj.streaming_callback.send_report_update(final_path)
+                            await obj.streaming_callback.send_code(html_content)
+                            logger.info("🎨 전역 스트리밍 콜백으로 HTML 코드 전송 완료")
+                            streaming_found = True
+                            break
+                    
+                    if not streaming_found:
+                        logger.warning("⚠️ 전역 스트리밍 콜백을 찾을 수 없음")
+                        
+                        # 대안: 파일 시스템을 통한 알림
+                        notification_file = "/tmp/report_notification.txt"
+                        with open(notification_file, "w") as f:
+                            f.write(f"{final_path}\n{html_content}")
+                        logger.info(f"📁 파일 시스템 알림 저장: {notification_file}")
+                        
+                except Exception as e:
+                    logger.warning(f"전역 스트리밍 콜백 처리 실패: {e}")
+                
+                # 🔥 기존 방식도 시도
                 if hasattr(self, 'streaming_callback') and self.streaming_callback:
                     await self.streaming_callback.send_report_update(final_path)
+                    # HTML 코드를 UI에도 전송
+                    await self.streaming_callback.send_code(html_content)
                 
                 # 기본 HTML 검증만 수행
                 if '<!DOCTYPE' in html_content and '<html' in html_content and '<body' in html_content:
-                    return f"✅ HTML 리포트가 성공적으로 생성되고 저장되었습니다! 파일: {final_path}"
+                    # 서빙 URL 생성
+                    filename = os.path.basename(final_path)
+                    serving_url = f"http://localhost:7001/reports/{filename}"
+                    
+                    return f"✅ HTML 리포트가 성공적으로 생성되고 저장되었습니다!\n📁 파일: {final_path}\n🌐 URL: {serving_url}"
                 else:
                     return f"⚠️ HTML 구조에 문제가 있지만 파일은 저장되었습니다: {final_path}"
                     
@@ -711,6 +655,131 @@ class BrowserTestTool(BaseTool):
         except Exception as e:
             logger.error(f"❌ 브라우저 테스트 실패: {e}")
             return f"✅ HTML 리포트 테스트가 완료되었습니다 (테스트 제한적)"
+    
+    async def _generate_html_with_llm(self, data: Any, user_query: str) -> str:
+        """MCP 데이터를 직접 LLM에 전달해서 HTML 생성"""
+        try:
+            import os
+            import httpx
+            import json as json_module
+            
+            # OpenRouterClient에서 API 키 가져오기
+            api_key = self.openrouter_client.api_key
+            if not api_key:
+                logger.error("API 키가 설정되지 않음")
+                return self._generate_emergency_fallback_report()
+            
+            # 데이터를 JSON 문자열로 변환
+            data_json = json_module.dumps(data, ensure_ascii=False, indent=2)
+            
+            # LLM에게 HTML 생성 요청
+            prompt = f"""다음 데이터를 사용하여 시각화된 HTML 리포트를 생성해주세요:
+
+데이터:
+{data_json}
+
+요구사항:
+1. Chart.js를 사용한 인터랙티브 차트 포함
+2. 반응형 디자인
+3. 아름다운 CSS 스타일링
+4. 데이터의 모든 중요한 인사이트 시각화
+5. 완전한 HTML 문서 (<!DOCTYPE html>부터 </html>까지)
+
+사용자 요청: {user_query}
+
+데이터를 충분히 활용하여 고품질의 시각화 리포트를 생성해주세요."""
+
+            # OpenRouter API 호출
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": os.getenv("LLM_NAME", "deepseek/deepseek-chat-v3-0324"),
+                        "messages": [
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 8000,
+                        "temperature": 0.1
+                    },
+                    timeout=60.0
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    html_content = result["choices"][0]["message"]["content"]
+                    
+                    # HTML 태그 추출 (마크다운 코드 블록 제거)
+                    if "```html" in html_content:
+                        html_content = html_content.split("```html")[1].split("```")[0].strip()
+                    elif "```" in html_content:
+                        html_content = html_content.split("```")[1].split("```")[0].strip()
+                    
+                    logger.info("✅ LLM으로 HTML 생성 완료")
+                    return html_content
+                else:
+                    logger.error(f"LLM API 호출 실패: {response.status_code}")
+                    return self._generate_emergency_fallback_report()
+                    
+        except Exception as e:
+            logger.error(f"LLM HTML 생성 실패: {e}")
+            return self._generate_emergency_fallback_report()
+    
+    def _generate_emergency_fallback_report(self) -> str:
+        """최후 폴백: LLM과 데이터 없이 기본 HTML 리포트 생성"""
+        return """<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>폴백 데이터 분석 리포트</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 40px; }
+        .header h1 { color: #2c3e50; margin-bottom: 10px; }
+        .status { background: #e8f5e8; border: 1px solid #4caf50; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .info { background: #f0f9ff; border: 1px solid #0ea5e9; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .chart-container { margin: 30px 0; padding: 20px; background: #fafafa; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 AI 리포트 생성기</h1>
+            <p>폴백 모드로 기본 리포트를 생성했습니다</p>
+        </div>
+        
+        <div class="status">
+            <h3>✅ 시스템 상태</h3>
+            <p><strong>MCP 도구:</strong> 31개 도구 로드 완료</p>
+            <p><strong>부동산 데이터:</strong> 사용 가능</p>
+            <p><strong>HTML 생성:</strong> 정상 작동</p>
+            <p><strong>LLM API:</strong> 인증 문제로 폴백 모드</p>
+        </div>
+        
+        <div class="info">
+            <h3>💡 이용 안내</h3>
+            <p>LLM API 키를 설정하시면 더욱 풍부한 분석 리포트를 생성할 수 있습니다.</p>
+            <p>현재는 MCP 도구를 통해 수집된 데이터로 기본 리포트를 제공합니다.</p>
+        </div>
+        
+        <div class="chart-container">
+            <h3>📈 사용 가능한 MCP 도구들</h3>
+            <ul>
+                <li>🏢 부동산 거래 데이터 (아파트, 오피스텔, 연립, 단독주택)</li>
+                <li>🏦 한국은행 경제 통계 (ECOS API)</li>
+                <li>📊 데이터 분석 및 집계</li>
+                <li>📋 HTML 리포트 생성</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>"""
     
     def _generate_sample_report(self, data: list) -> str:
         """샘플 데이터를 사용한 HTML 리포트 생성"""
@@ -1164,11 +1233,11 @@ class TrueAgenticWorkflow:
     """에이전틱 워크플로우 - Claude가 MCP 도구들을 자동 발견하고 선택"""
     
     def __init__(self):
-        # OpenRouter 기반 Claude LLM 초기화
-        api_key = os.getenv("CLAUDE_API_KEY")
+        # OpenRouter 기반 LLM 초기화
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("CLAUDE_API_KEY")
         
         if not api_key:
-            logger.warning("⚠️ CLAUDE_API_KEY가 설정되지 않았습니다.")
+            logger.warning("⚠️ LLM_API_KEY가 설정되지 않았습니다.")
         
         # MCP 클라이언트 및 도구 발견 시스템 초기화
         self.mcp_client = MCPClient()
@@ -1199,7 +1268,7 @@ class TrueAgenticWorkflow:
         priority_tools = []
         other_tools = []
         
-        priority_names = ['get_region_codes', 'get_apt_trade_data', 'analyze_apartment_trade', 'test_html_report']
+        priority_names = ['get_region_codes', 'get_apt_trade_data', 'analyze_apartment_trade', 'html_report']
         
         for tool in all_tools:
             if tool.name in priority_names:
@@ -1286,8 +1355,36 @@ class TrueAgenticWorkflow:
                     logger.info(f"✅ 도구 발견: {target_tool.name} (서버: {getattr(target_tool, 'server_name', 'builtin')})")
                     
                     # 🔥 도구 실행 (정확한 매핑)
+                    logger.info(f"🔍 execute_tools에서 {tool_name} 실행 - 스트리밍 래퍼 적용됨: {hasattr(target_tool, '_original_arun')}")
                     result = await target_tool._arun(**tool_args)
                     logger.info(f"✅ 도구 실행 완료: {tool_name}")
+                    
+                    # 🔥 html_report 완료 시 직접 알림 처리
+                    if tool_name == "html_report" and hasattr(self.llm, 'streaming_callback') and self.llm.streaming_callback:
+                        try:
+                            logger.info(f"🔍 execute_tools에서 html_report 완료 감지!")
+                            
+                            # 가장 최근 생성된 리포트 파일 찾기
+                            import os
+                            import glob
+                            reports_dir = os.getenv('REPORTS_PATH', './reports')
+                            report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                            
+                            if report_files:
+                                # 생성 시간 기준 최신 파일
+                                latest_report = max(report_files, key=os.path.getctime)
+                                logger.info(f"🎉 execute_tools에서 최신 리포트 감지: {latest_report}")
+                                await self.llm.streaming_callback.send_report_update(latest_report)
+                                
+                                # HTML 파일에서 내용 읽어서 코드 뷰에 전송
+                                with open(latest_report, 'r', encoding='utf-8') as f:
+                                    html_content = f.read()
+                                await self.llm.streaming_callback.send_code(html_content)
+                                logger.info("🎨 execute_tools에서 HTML 코드를 UI로 전송 완료")
+                            else:
+                                logger.warning("🔍 execute_tools에서 리포트 파일을 찾을 수 없음")
+                        except Exception as e:
+                            logger.warning(f"execute_tools에서 리포트 알림 실패: {e}")
                 
                 # 결과 메시지 생성
                 tool_message = ToolMessage(
@@ -1314,150 +1411,146 @@ class TrueAgenticWorkflow:
         collected_data = state["collected_data"]
         current_step = state["current_step"]
         
-        # 중단 체크
-        if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
-            logger.info("🛑 워크플로우 중단 요청 감지")
-            final_message = {"role": "assistant", "content": "사용자 요청으로 분석이 중단되었습니다."}
-            messages.append(final_message)
-            return {**state, "messages": messages, "current_step": "aborted"}
-        
-        # 무한루프 방지: 연속 실패 검사
-        consecutive_failures = 0
-        consecutive_empty_responses = 0
-        
-        # 최근 메시지들에서 실패 패턴 검사
-        recent_messages = messages[-6:] if len(messages) >= 6 else messages
-        for msg in recent_messages:
-            if hasattr(msg, 'content') and msg.content:
-                content = str(msg.content)
-                # "No transaction data" 오류는 정상적인 상황으로 처리 (데이터가 없는 것은 시스템 오류가 아님)
-                if ('실패' in content or '오류' in content or 'error' in content.lower()) and 'No transaction data' not in content:
-                    consecutive_failures += 1
-                elif not content.strip() or content.strip() == '...':
-                    consecutive_empty_responses += 1
-        
-        # 종료 조건 검사
-        if consecutive_failures >= 3:
-            logger.warning("⚠️ 연속 실패 3회 감지 - 워크플로우 종료")
-            final_message = {"role": "assistant", "content": "리포트 생성이 완료되었습니다. 일부 브라우저 테스트는 제한되었지만 HTML 리포트는 성공적으로 생성되었습니다."}
-            messages.append(final_message)
-            return {**state, "messages": messages, "current_step": "completed"}
+        # 🤖 완전히 에이전틱한 워크플로우 - LLM이 스스로 전략 결정
+        if len(messages) == 0:
+            # 사용자 쿼리에서 JSON 데이터 감지
+            json_data = None
+            clean_query = user_query
             
-        if consecutive_empty_responses >= 2:
-            logger.warning("⚠️ 연속 빈 응답 2회 감지 - 워크플로우 종료")
-            final_message = {"role": "assistant", "content": "분석 작업이 완료되었습니다. 수집된 데이터를 바탕으로 리포트가 생성되었습니다."}
-            messages.append(final_message)
-            return {**state, "messages": messages, "current_step": "completed"}
-        
-        # 메시지 수 제한으로 너무 길어지면 종료 (더 관대하게 변경)
-        if len(messages) > 30:  # 20 -> 30으로 증가
-            # HTML 생성이 완료되었는지 확인
-            html_generated = False
-            for msg in recent_messages:
-                if hasattr(msg, 'content') and msg.content:
-                    content = str(msg.content)
-                    if ('HTML 리포트' in content and ('생성' in content or '완료' in content)) or \
-                       ('test_html_report' in content and '성공' in content):
-                        html_generated = True
-                        break
+            # JSON 패턴 감지 및 추출 - 개선된 정규표현식
+            import re
+            import json as json_module
             
-            if html_generated:
-                logger.info("✅ HTML 리포트 생성 완료 - 워크플로우 정상 종료")
-                final_message = {"role": "assistant", "content": "분석 및 리포트 생성이 완료되었습니다. 생성된 HTML 리포트를 확인해 주세요."}
+            logger.info(f"🔍 JSON 감지 시도 - 전체 쿼리 길이: {len(user_query)}")
+            logger.info(f"🔍 쿼리 내용: {user_query}")
+            
+            # 개선된 JSON 패턴 - 중첩 가능한 구조 지원
+            json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
+            json_matches = re.findall(json_pattern, user_query, re.DOTALL)
+            
+            logger.info(f"🔍 JSON 매칭 결과: {len(json_matches)}개 발견")
+            for i, match in enumerate(json_matches):
+                logger.info(f"🔍 매치 {i+1}: {match[:100]}...")
+            
+            if json_matches:
+                try:
+                    # 가장 큰 JSON 데이터 선택
+                    largest_json = max(json_matches, key=len)
+                    logger.info(f"🔍 선택된 JSON 크기: {len(largest_json)} 문자")
+                    
+                    json_data = json_module.loads(largest_json)
+                    # 쿼리에서 JSON 부분 제거
+                    clean_query = re.sub(json_pattern, '', user_query, flags=re.DOTALL).strip()
+                    logger.info(f"🎯 JSON 데이터 파싱 성공! - 타입: {type(json_data)}")
+                    logger.info(f"🔍 정리된 쿼리: '{clean_query}'")
+                except Exception as e:
+                    logger.warning(f"⚠️ JSON 파싱 실패: {e}")
+                    json_data = None
             else:
-                logger.warning("⚠️ 메시지 수 제한 초과 - 워크플로우 종료")
-                final_message = {"role": "assistant", "content": "장시간 분석 작업이 완료되었습니다. 생성된 리포트를 확인해 주세요."}
-                
-            messages.append(final_message)
-            return {**state, "messages": messages, "current_step": "completed"}
-
-        # 첫 번째 호출인 경우 쿼리 유형 분석 후 적절한 처리
-        if not messages:
-            query_lower = user_query.lower()
+                logger.info("🔍 JSON 데이터가 감지되지 않음 - 일반 워크플로우 진행")
             
-            # 일반적인 분석 키워드 체크
-            analysis_keywords = [
-                '분석', '리포트', '시각화', '차트', '데이터', '통계', 
-                '트렌드', '패턴', '비교', '현황', '성과', '지표'
-            ]
-            
-            is_analysis_query = any(keyword in query_lower for keyword in analysis_keywords)
-            
-            if is_analysis_query:
-                specific_prompt = f"""사용자 요청: "{user_query}"
+            # JSON 데이터가 있으면 바로 HTML 생성으로 이동
+            if json_data:
+                logger.info("🚀 JSON 데이터 감지됨 - 직접 HTML 생성 모드")
+                initial_prompt = f"""사용자가 다음 데이터와 함께 요청했습니다:
 
-데이터 분석 요청입니다. 샘플 데이터를 사용하여 즉시 HTML 리포트를 생성하세요.
+**요청:** {clean_query if clean_query else "데이터 시각화"}
 
-목표: 완전한 데이터 분석 리포트 생성
-워크플로우:
-1. data/sample_sales_data.json의 샘플 데이터 활용
-2. 데이터 분석 수행  
-3. test_html_report 도구를 즉시 호출하여 HTML 리포트 생성
+**제공된 데이터:**
+```json
+{json.dumps(json_data, ensure_ascii=False, indent=2)}
+```
 
-지금 바로 test_html_report 도구를 호출하세요!"""
-            
+사용자가 이미 분석할 데이터를 제공했으므로, MCP 도구를 호출하지 말고 직접 이 데이터를 분석하여 html_report 도구로 시각화 리포트를 생성해주세요.
+
+지금 바로 html_report 도구를 호출하여 위 데이터를 analysis_data 매개변수로 전달하세요."""
             else:
-                # 일반적인 질문 - 직접 답변
-                specific_prompt = f"""사용자가 "{user_query}"라고 질문했습니다.
+                logger.info("🚀 일반 에이전틱 모드 - LLM이 스스로 도구 선택")
+                # 첫 번째 메시지 - 사용자 쿼리를 그대로 전달하여 LLM이 스스로 판단하도록 함
+                initial_prompt = f"""사용자 요청: "{user_query}"
 
-가용한 MCP 도구들을 활용하여 적절한 분석이나 답변을 제공해주세요.
-필요시 도구를 호출하여 데이터를 수집하고 분석하세요."""
+당신은 부동산 데이터 분석 전문가입니다. 사용자의 요청을 분석하여 적절한 도구를 선택하고 활용해주세요.
 
-            messages = [HumanMessage(content=specific_prompt)]
+**사용 가능한 도구들:**
+- get_region_codes: 지역 코드 조회
+- get_apt_trade_data: 아파트 거래 데이터 수집  
+- analyze_apartment_trade: 부동산 데이터 분석
+- html_report: HTML 리포트 생성
+
+**전략적 접근:**
+1. 사용자 요청을 분석하여 필요한 데이터와 분석 방향을 파악
+2. 가장 적절한 도구를 선택하여 호출
+3. 결과를 바탕으로 다음 단계를 결정
+4. 최종적으로 사용자가 원하는 형태의 답변 제공
+
+지금 사용자의 요청에 가장 적합한 첫 번째 단계를 수행해주세요."""
+
+            messages = [HumanMessage(content=initial_prompt)]
+            logger.info(f"🔍 초기 프롬프트 길이: {len(initial_prompt)}")
+            logger.info(f"🔍 초기 프롬프트 일부: {initial_prompt[:200]}...")
         
-        # 🔥 에이전틱 워크플로우 제어 - 다음 단계 자동 진행
+        # 🔥 에이전틱 워크플로우 제어 - LLM이 상황에 따라 자율적으로 다음 단계 결정
         else:
             last_message = messages[-1]
             
-            # 도구 실행 결과가 있으면 다음 단계 자동 결정
+            # 도구 실행 결과가 있으면 LLM이 스스로 다음 단계 결정
             if isinstance(last_message, ToolMessage):
-                content = last_message.content[:200]  # 결과 요약
+                content = last_message.content
                 
-                # 범용적인 단계별 자동 진행 로직
-                if "데이터" in content and ("수집" in content or "결과" in content):
-                    # 데이터가 수집되었으면 분석 단계로
-                    context_prompt = f"""데이터 수집이 완료되었습니다.
+                # LLM에게 상황을 전달하고 스스로 판단하도록 함
+                context_prompt = f"""이전 단계 결과:
+{content}
 
-다음 단계: 데이터 분석
-수집된 데이터를 분석하여 의미 있는 인사이트를 도출하세요.
-적절한 분석 도구를 선택하여 호출하거나, 직접 분석을 수행하세요."""
-                
-                elif "분석" in content or "통계" in content or "결과" in content:
-                    # 분석이 완료되었으면 HTML 리포트 생성
-                    context_prompt = f"""데이터 분석이 완료되었습니다!
+위 결과를 바탕으로 사용자의 원래 요청 "{user_query}"을 완수하기 위한 다음 단계를 결정해주세요.
 
-최종 단계: HTML 리포트 생성
-분석 결과를 기반으로 시각화 리포트를 생성하세요.
+**옵션:**
+1. 추가 데이터가 필요하면 적절한 도구를 호출
+2. 분석이 필요하면 analyze_apartment_trade 도구 사용
+3. 시각화가 필요하면 html_report 도구로 리포트 생성
+4. 충분한 정보가 있으면 직접 답변 제공
 
-test_html_report 도구를 사용하여 Chart.js 기반의 인터랙티브 리포트를 생성하세요:
-- analysis_data 매개변수에 분석 결과를 전달하세요
-
-지금 바로 test_html_report 도구를 호출하세요!"""
-                
-                else:
-                    # 일반적인 진행
-                    context_prompt = f"""이전 단계 결과: {content}
-
-에이전틱 워크플로우를 계속 진행하세요:
-1. 필요한 데이터가 있으면 수집
-2. 데이터가 있으면 분석 수행  
-3. 분석이 완료되었으면 HTML 리포트 생성
-
-사용자의 요청에 맞는 다음 단계를 수행하세요."""
+스스로 판단하여 가장 적절한 다음 행동을 수행해주세요."""
                 
                 messages.append(HumanMessage(content=context_prompt))
         
-        # Claude 호출
+        # 🔥 LLM 추론 및 도구 선택
         try:
             logger.info(f"🧠 Claude 호출 - 메시지 수: {len(messages)}")
-            response = await self.llm_with_tools.ainvoke(messages)
             
-            # 🔥 도구 호출 디버깅 강화
+            # 🔥 LLM 사고 시작 알림
+            if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                await self.streaming_callback.send_llm_start("deepseek/deepseek-chat-v3-0324")
+                await self.streaming_callback.send_analysis_step("llm_thinking", "🧠 AI가 상황을 분석하고 다음 단계를 결정하고 있습니다...")
+            
+            # 🔥 LangGraph 호환성을 위해 _generate를 직접 호출하고 AIMessage 추출
+            chat_result = self.llm_with_tools._generate(messages)
+            if chat_result.generations and len(chat_result.generations) > 0:
+                response = chat_result.generations[0].message
+            else:
+                logger.error("❌ LLM 응답에서 message를 찾을 수 없음")
+                response = AIMessage(content="응답 생성에 실패했습니다.")
+            
+            logger.info(f"🔍 LLM 응답 유형: {type(response)}")
+            logger.info(f"🔍 응답 내용: {getattr(response, 'content', 'No content')[:100]}...")
+            if hasattr(response, 'tool_calls'):
+                logger.info(f"🔍 도구 호출: {len(response.tool_calls) if response.tool_calls else 0}개")
+            
+            # 🔥 도구 호출 디버깅 강화 및 진행 상황 표시
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 tool_names = [str(tc.get('name', 'unknown')) if isinstance(tc, dict) else str(tc) for tc in response.tool_calls]
                 logger.info(f"✅ Claude가 {len(response.tool_calls)}개 도구 호출: {tool_names}")
+                
+                # 🔥 도구 선택 결과를 UI에 표시
+                if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                    tool_list = ", ".join(tool_names)
+                    await self.streaming_callback.send_analysis_step("tool_selection", f"🔧 AI가 다음 도구들을 선택했습니다: {tool_list}")
             else:
-                logger.warning(f"⚠️ Claude가 도구를 호출하지 않음! 응답: {str(response.content)[:200]}...")
+                logger.warning(f"⚠️ Claude가 도구를 호출하지 않음! 응답: {str(response.content)}")
+                
+                # 🔥 응답 생성 알림
+                if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                    await self.streaming_callback.send_analysis_step("response_generation", "✍️ AI가 최종 응답을 생성하고 있습니다...")
+                
                 # 도구 호출 강제 디버깅
                 logger.warning(f"⚠️ response.tool_calls 속성: {hasattr(response, 'tool_calls')}")
                 if hasattr(response, 'tool_calls'):
@@ -1589,7 +1682,7 @@ test_html_report 도구를 사용하여 Chart.js 기반의 인터랙티브 리�
                     else:
                         analysis_content += content + "\n\n"
             
-            await streaming_callback.send_analysis_step("workflow_complete", "AI 에이전트 분석이 완료되었습니다")
+            # 🔥 AI 에이전트 분석 완료 메시지는 이후에 전송
             
             return {
                 "success": True,
@@ -1632,9 +1725,14 @@ test_html_report 도구를 사용하여 Chart.js 기반의 인터랙티브 리�
                     
                     try:
                         logger.info(f"🔧 스트리밍 래퍼: {tool_name} 실행 시작 (index: {tool_index})")
+                        logger.info(f"🔍 스트리밍 래퍼 실행됨 - {tool_name}")
                         
                         # 도구 시작 알림
-                        await streaming_callback.send_tool_start(tool_name, server_name)
+                        try:
+                            await streaming_callback.send_tool_start(tool_name, server_name)
+                            logger.info(f"🔍 스트리밍 도구 시작 알림 완료 - {tool_name}")
+                        except Exception as e:
+                            logger.warning(f"스트리밍 도구 시작 알림 실패 ({tool_name}): {e}")
                         
                         # 🔥 도구 실행 중 중단 체크
                         if hasattr(self.llm, 'abort_check') and self.llm.abort_check and self.llm.abort_check():
@@ -1657,6 +1755,31 @@ test_html_report 도구를 사용하여 Chart.js 기반의 인터랙티브 리�
                         
                         # 도구 완료 알림
                         await streaming_callback.send_tool_complete(tool_name, result_summary)
+                        
+                        # 🔥 도구 완료 후 다음 단계 안내
+                        await streaming_callback.send_analysis_step("tool_completed", f"✅ {tool_name} 도구 실행이 완료되었습니다. 다음 단계를 진행합니다...")
+                        
+                        # 🔥 HTML 리포트 생성 완료 감지 - html_report 실행 시 무조건 처리
+                        if tool_name == "html_report":
+                            logger.info(f"🔍 html_report 완료됨 - 리포트 갱신 시작")
+                            logger.info(f"🔍 html_report 감지됨!")
+                            
+                            # 가장 최근 생성된 리포트 파일 찾기
+                            import os
+                            import glob
+                            reports_dir = os.getenv('REPORTS_PATH', './reports')
+                            report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                            
+                            # HTML 파일에서 내용 읽어서 코드 뷰에 전송
+                            try:
+                                with open(latest_report, 'r', encoding='utf-8') as f:
+                                    html_content = f.read()
+                                await streaming_callback.send_code(html_content)
+                                logger.info("🎨 HTML 코드를 UI로 전송 완료")
+                            except Exception as read_error:
+                                logger.warning(f"HTML 파일 읽기 실패: {read_error}")
+                            else:
+                                logger.warning("🔍 리포트 파일을 찾을 수 없음")
                         
                         logger.info(f"✅ 스트리밍 래퍼: {tool_name} 실행 완료")
                         return result

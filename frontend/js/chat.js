@@ -227,6 +227,31 @@ class ChatApplication {
         }
     }
 
+    // 🔥 최신 리포트 자동 로드 및 표시
+    async loadLatestReport() {
+        try {
+            const response = await fetch('/reports');
+            const data = await response.json();
+            const reports = data.reports || [];
+            
+            if (reports.length > 0) {
+                // 가장 최신 리포트 (첫 번째 리포트)
+                const latestReport = reports[0];
+                console.log('🎉 최신 리포트 자동 로드:', latestReport.filename);
+                
+                // HTML 코드 로드
+                const htmlResponse = await fetch(latestReport.url);
+                const htmlContent = await htmlResponse.text();
+                
+                // 코드 뷰에 표시
+                this.showCodeView(htmlContent, latestReport.filename);
+                console.log('🎨 최신 리포트가 코드 뷰에 자동으로 표시됨');
+            }
+        } catch (error) {
+            console.error('최신 리포트 자동 로드 실패:', error);
+        }
+    }
+
     // 채팅 히스토리 로드 (로컬 스토리지에서)
     loadChatHistory() {
         try {
@@ -496,6 +521,9 @@ class ChatApplication {
                                     // 🔥 기존 content에 새로운 content 추가
                                     currentContent += data.content;
                                     
+                                    // 🔥 HTML 태그 실시간 감지 및 코드 뷰 업데이트
+                                    this.extractAndDisplayHTML(currentContent);
+                                    
                                     // 🔥 즉시 UI 업데이트
                                     this.updateMessageContent(assistantMessage, currentContent);
                                     console.log('✅ UI 업데이트 완료, 현재 길이:', currentContent.length);
@@ -528,6 +556,12 @@ class ChatApplication {
                                     }
                                     this.addSystemMessage('✅ 분석이 성공적으로 완료되었습니다!');
                                     console.log('🎉 스트리밍 완료');
+                                    
+                                    // 🔥 완료 시 자동으로 리포트 리스트 새로고침 및 최신 리포트 표시
+                                    setTimeout(() => {
+                                        this.loadReports();
+                                        this.loadLatestReport(); // 최신 리포트를 자동으로 코드 뷰에 표시
+                                    }, 1000);
                                     break;
                                     
                                 case 'error':
@@ -551,6 +585,23 @@ class ChatApplication {
                                         assistantMessage = this.addMessage('assistant', `🛑 ${data.message || '분석이 중단되었습니다.'}`);
                                     } else {
                                         this.updateMessageContent(assistantMessage, currentContent + `\n\n🛑 ${data.message || '분석이 중단되었습니다.'}`);
+                                    }
+                                    break;
+                                    
+                                case 'report_update':
+                                    // 리포트 목록 갱신
+                                    this.loadReports();
+                                    console.log('📄 리포트 목록 갱신됨:', data.report_url);
+                                    break;
+                                    
+                                case 'code':
+                                    // 우측 코드 뷰에 HTML 코드 표시
+                                    console.log('🔍 code 이벤트 수신:', data);
+                                    if (data.code) {
+                                        this.displayCode(data.code, data.filename || 'report.html');
+                                        console.log('📄 HTML 코드가 코드 뷰에 표시됨');
+                                    } else {
+                                        console.warn('⚠️ code 이벤트에 코드 데이터가 없음:', data);
                                     }
                                     break;
                                     
@@ -696,6 +747,33 @@ class ChatApplication {
         if (indicator) {
             indicator.remove();
         }
+    }
+
+    // HTML 태그 실시간 추출 및 표시
+    extractAndDisplayHTML(content) {
+        // HTML 패턴 감지 (<!DOCTYPE부터 </html>까지)
+        const htmlPattern = /<!DOCTYPE[\s\S]*?<\/html>/i;
+        const match = content.match(htmlPattern);
+        
+        if (match) {
+            const htmlCode = match[0];
+            this.updateCode(htmlCode);
+            console.log('🎨 스트리밍에서 HTML 코드 감지됨:', htmlCode.length, '자');
+            return true;
+        }
+        
+        // 부분적인 HTML 태그 감지 (진행 중인 HTML)
+        const partialHtmlPattern = /<!DOCTYPE[\s\S]*$/i;
+        const partialMatch = content.match(partialHtmlPattern);
+        
+        if (partialMatch && partialMatch[0].length > 50) { // 최소 길이 체크
+            const partialHtml = partialMatch[0];
+            this.updateCode(partialHtml);
+            console.log('🔄 부분 HTML 코드 업데이트:', partialHtml.length, '자');
+            return true;
+        }
+        
+        return false;
     }
 
     // 코드 업데이트 (클로드 데스크톱 스타일)
@@ -1059,6 +1137,46 @@ class ChatApplication {
         this.scrollToBottom();
     }
 
+    // JSON 문자열인지 확인하는 함수
+    isJsonString(text) {
+        try {
+            const trimmed = text.trim();
+            if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || 
+                (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+                JSON.parse(text);
+                return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // JSON을 beautify하는 헬퍼 함수
+    beautifyJson(text) {
+        try {
+            const parsed = JSON.parse(text);
+            return JSON.stringify(parsed, null, 2);
+        } catch (e) {
+            return text;
+        }
+    }
+
+    // JSON을 HTML로 하이라이트하는 함수
+    formatJsonHtml(jsonText) {
+        const beautified = this.beautifyJson(jsonText);
+        return beautified
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/(".*?")/g, '<span class="json-string">$1</span>')
+            .replace(/(\d+\.?\d*)/g, '<span class="json-number">$1</span>')
+            .replace(/(true|false|null)/g, '<span class="json-keyword">$1</span>')
+            .replace(/({|})/g, '<span class="json-brace">$1</span>')
+            .replace(/(\[|\])/g, '<span class="json-bracket">$1</span>')
+            .replace(/:/g, '<span class="json-colon">:</span>');
+    }
+
     // 도구 활동 업데이트
     updateToolActivity(toolName, status, result = '') {
         const activityElement = document.querySelector(`[data-tool-name="${toolName}"]`);
@@ -1085,7 +1203,27 @@ class ChatApplication {
         if (result) {
             const resultDiv = document.createElement('div');
             resultDiv.className = 'tool-result';
-            resultDiv.textContent = result;
+            
+            // JSON인지 확인하고 beautify
+            if (this.isJsonString(result)) {
+                resultDiv.innerHTML = `
+                    <div class="result-header">
+                        <span class="result-label">JSON 응답:</span>
+                        <button class="copy-json-btn" onclick="navigator.clipboard.writeText('${this.beautifyJson(result).replace(/'/g, "\\'")}')">
+                            📋 복사
+                        </button>
+                    </div>
+                    <pre class="json-result">${this.formatJsonHtml(result)}</pre>
+                `;
+            } else {
+                resultDiv.innerHTML = `
+                    <div class="result-header">
+                        <span class="result-label">응답:</span>
+                    </div>
+                    <div class="text-result">${result}</div>
+                `;
+            }
+            
             activityElement.querySelector('.tool-activity-content').appendChild(resultDiv);
         }
     }

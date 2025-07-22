@@ -12,6 +12,8 @@ from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
+import os
+import glob
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +125,39 @@ class StreamingCallback:
             "error": error,
             "timestamp": datetime.now().isoformat()
         })
+    
+    async def send_report_update(self, report_path: str):
+        """리포트 생성 완료 및 목록 갱신 알림"""
+        # 상대 경로로 변환 (웹에서 접근 가능한 URL)
+        project_root = os.getenv('PROJECT_ROOT', os.getcwd())
+        relative_path = report_path.replace(f'{project_root}/', '')
+        report_url = f"/{relative_path}"
+        
+        # complete 이벤트 전송
+        await self.queue.put({
+            "type": "complete",
+            "report_url": report_url,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # 리포트 목록 갱신 알림도 전송
+        await self.queue.put({
+            "type": "report_update",
+            "report_path": report_path,
+            "report_url": report_url,
+            "timestamp": datetime.now().isoformat()
+        })
+    
+    async def send_code(self, html_content: str, filename: str = "report.html"):
+        """HTML 코드 전송"""
+        logger.info(f"🔍 send_code 호출됨: 코드 길이={len(html_content)}, 파일명={filename}")
+        await self.queue.put({
+            "type": "code",
+            "code": html_content,
+            "filename": filename,
+            "timestamp": datetime.now().isoformat()
+        })
+        logger.info("📤 HTML 코드 이벤트가 큐에 추가됨")
 
 def generate_sse_data(event: str, data: Dict[str, Any]) -> str:
     """SSE 형식의 데이터 생성"""
@@ -177,6 +212,9 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                     return
                 
                 # 실제 워크플로우 실행
+                logger.info(f"🔍 orchestrator 타입: {type(orchestrator)}")
+                logger.info(f"🔍 process_query_with_streaming 존재 여부: {hasattr(orchestrator, 'process_query_with_streaming')}")
+                
                 workflow_task = asyncio.create_task(
                     orchestrator.process_query_with_streaming(request.user_query, session_id, streaming_callback)
                 )
@@ -212,6 +250,49 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                         yield generate_sse_data("message", message)
                         message_count += 1
                         
+                        # 🔍 디버깅: 모든 메시지 타입 로깅
+                        if message.get("type") == "tool_complete":
+                            logger.info(f"🔍 tool_complete 감지: tool_name={message.get('tool_name')}, result={str(message.get('result', ''))[:100]}...")
+                        
+                        # 🔥 리포트 완료 메시지 감지 시 즉시 처리 (수정된 조건)
+                        is_report_complete = (
+                            message.get("type") == "tool_complete" and 
+                            message.get("tool_name") == "html_report"
+                        ) or (
+                            "HTML 리포트" in str(message.get("result", "")) and 
+                            ("생성되고 저장되었습니다" in str(message.get("result", "")) or "저장 완료" in str(message.get("result", "")))
+                        )
+                        
+                        if is_report_complete:
+                            logger.info("🎉 html_report 완료 감지 - 즉시 리포트 처리")
+                            try:
+                                reports_dir = os.getenv('REPORTS_PATH', './reports')
+                                report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                                
+                                if report_files:
+                                    latest_report = max(report_files, key=os.path.getctime)
+                                    logger.info(f"🎉 즉시 리포트 감지: {latest_report}")
+                                    
+                                    # HTML 파일 읽기
+                                    with open(latest_report, 'r', encoding='utf-8') as f:
+                                        html_content = f.read()
+                                    
+                                    # 즉시 UI로 전송
+                                    yield generate_sse_data("message", {
+                                        "type": "code", 
+                                        "code": html_content,
+                                        "filename": os.path.basename(latest_report)
+                                    })
+                                    
+                                    yield generate_sse_data("message", {
+                                        "type": "report_update",
+                                        "report_path": latest_report
+                                    })
+                                    
+                                    logger.info("🎨 즉시 HTML 코드 및 리포트 업데이트 전송 완료")
+                            except Exception as e:
+                                logger.error(f"❌ 즉시 리포트 처리 실패: {e}")
+                        
                         # 진행상황 표시
                         if message_count % 3 == 0:
                             progress = min(85, message_count * 5)
@@ -220,6 +301,7 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                     except asyncio.TimeoutError:
                         # 타임아웃 - 워크플로우 완료 확인
                         if workflow_task.done():
+                            logger.info(f"🔍 워크플로우 완료 감지 - 루프 종료")
                             break
                         continue
                     except asyncio.CancelledError:
@@ -230,12 +312,79 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                 
                 # 워크플로우 결과 대기
                 result = await workflow_task
+                logger.info(f"🔍 워크플로우 결과: success={result.get('success', False)}")
+                
+                # 🔥 리포트 생성 완료 감지 및 UI 알림 (무조건 실행)
+                logger.info("🔍 리포트 감지 시작")
+                try:
+                    reports_dir = os.getenv('REPORTS_PATH', './reports')
+                    report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                    logger.info(f"🔍 발견된 리포트 파일 수: {len(report_files)}")
+                    
+                    if report_files:
+                        # 생성 시간 기준 최신 파일
+                        latest_report = max(report_files, key=os.path.getctime)
+                        logger.info(f"🎉 streaming_api에서 최신 리포트 감지: {latest_report}")
+                        
+                        # HTML 파일 내용을 코드 뷰에 전송
+                        with open(latest_report, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        
+                        yield generate_sse_data("message", {
+                            "type": "code", 
+                            "code": html_content,
+                            "filename": os.path.basename(latest_report)
+                        })
+                        
+                        yield generate_sse_data("message", {
+                            "type": "report_update",
+                            "report_path": latest_report
+                        })
+                        
+                        logger.info("🎨 streaming_api에서 HTML 코드 및 리포트 업데이트 전송 완료")
+                        
+                except Exception as e:
+                    logger.error(f"❌ streaming_api 리포트 알림 실패: {e}")
+                
+                # 🔥 워크플로우 완료 후 무조건 리포트 감지 및 UI 알림
+                logger.info("🔍 워크플로우 완료 - 리포트 감지 시작")
+                try:
+                    reports_dir = os.getenv('REPORTS_PATH', './reports')
+                    report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                    logger.info(f"🔍 발견된 리포트 파일 수: {len(report_files)}")
+                    
+                    if report_files:
+                        # 생성 시간 기준 최신 파일
+                        latest_report = max(report_files, key=os.path.getctime)
+                        logger.info(f"🎉 최신 리포트 감지: {latest_report}")
+                        
+                        # HTML 파일 내용을 코드 뷰에 전송
+                        with open(latest_report, 'r', encoding='utf-8') as f:
+                            html_content = f.read()
+                        
+                        # 1. HTML 코드 이벤트 전송
+                        yield generate_sse_data("message", {
+                            "type": "code", 
+                            "code": html_content,
+                            "filename": os.path.basename(latest_report)
+                        })
+                        
+                        # 2. 리포트 업데이트 이벤트 전송
+                        yield generate_sse_data("message", {
+                            "type": "report_update",
+                            "report_path": latest_report
+                        })
+                        
+                        logger.info("🎨 HTML 코드 및 리포트 업데이트 이벤트 전송 완료")
+                        
+                except Exception as e:
+                    logger.error(f"❌ 리포트 감지 및 전송 실패: {e}")
                 
                 # 최종 결과 전송
                 yield generate_sse_data("message", {"type": "progress", "value": 100, "message": "완료"})
                 
                 if result.get("success"):
-                    # HTML 코드 전송
+                    # HTML 코드 전송 (추가 보장)
                     if result.get("html_content"):
                         yield generate_sse_data("message", {
                             "type": "code",
@@ -261,10 +410,49 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                 yield generate_sse_data("error", {"message": f"처리 중 오류가 발생했습니다: {str(e)}"})
         
             finally:
+                # 🔥 세션 종료 전 최종 리포트 감지 및 UI 알림 (무조건 실행)
+                logger.info("🔍 세션 종료 전 최종 리포트 감지 시작")
+                try:
+                    reports_dir = os.getenv('REPORTS_PATH', './reports')
+                    report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
+                    logger.info(f"🔍 세션 종료 시점 리포트 파일 수: {len(report_files)}")
+                    
+                    if report_files:
+                        # 생성 시간 기준 최신 파일
+                        latest_report = max(report_files, key=os.path.getctime)
+                        logger.info(f"🎉 세션 종료 시점 최신 리포트: {latest_report}")
+                        
+                        # HTML 파일 내용을 코드 뷰에 전송
+                        try:
+                            with open(latest_report, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            
+                            # 최종 이벤트 전송
+                            yield generate_sse_data("message", {
+                                "type": "code", 
+                                "code": html_content,
+                                "filename": os.path.basename(latest_report)
+                            })
+                            
+                            yield generate_sse_data("message", {
+                                "type": "report_update",
+                                "report_path": latest_report
+                            })
+                            
+                            logger.info("🎨 세션 종료 시점 HTML 코드 및 리포트 업데이트 최종 전송 완료")
+                            
+                        except Exception as read_error:
+                            logger.error(f"HTML 파일 읽기 실패: {read_error}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ 세션 종료 시점 리포트 감지 실패: {e}")
+                
                 # 세션 종료 시 추적에서 제거
                 if session_id in running_sessions:
                     del running_sessions[session_id]
                     logger.info(f"🔄 세션 {session_id} 정리 완료")
+
+
         
         return StreamingResponse(
             stream_generator(),

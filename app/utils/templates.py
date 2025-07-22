@@ -1,5 +1,5 @@
 """범용 AI 리포트 생성을 위한 프롬프트 템플릿을 제공합니다."""
-
+        
 import json
 from datetime import datetime
 from typing import Dict, Any, List
@@ -64,8 +64,8 @@ HTML 형태로 완전한 리포트를 생성해주세요:
 
 바로 HTML 코드로 응답해주세요. 설명이나 추가 텍스트 없이 온전한 HTML 문서만 제공해주세요.
 """
-
-    @staticmethod 
+    
+    @staticmethod
     def build_context_summary(data: Dict[str, Any]) -> str:
         """데이터 컨텍스트를 요약합니다."""
         
@@ -83,9 +83,9 @@ HTML 형태로 완전한 리포트를 생성해주세요:
         if isinstance(data, dict):
             main_keys = list(data.keys())[:5]  # 상위 5개만
             summary_parts.append(f"주요 데이터 유형: {', '.join(main_keys)}")
-            
-        return " | ".join(summary_parts) if summary_parts else "데이터 구조 분석 중"
         
+        return " | ".join(summary_parts) if summary_parts else "데이터 구조 분석 중"
+    
     @staticmethod
     def build_analysis_prompt(query: str, data: Any) -> str:
         """데이터 분석을 위한 프롬프트를 생성합니다."""
@@ -105,7 +105,7 @@ HTML 형태로 완전한 리포트를 생성해주세요:
 
 분석은 구체적이고 데이터에 기반해야 하며, 시각화에 적합한 형태로 구조화해주세요.
 """
-
+    
     @staticmethod
     def get_chart_config_template() -> str:
         """Chart.js 설정 템플릿을 반환합니다."""

@@ -20,34 +20,78 @@ class AgenticHTMLGenerator:
     
     async def generate_html(self, data: Any, user_query: str = "") -> str:
         """
-        에이전틱 HTML 생성 - LLM이 데이터를 분석하고 최적의 리포트 구조 결정
+        순수 LLM 기반 HTML 생성 - 템플릿 없이 완전한 HTML을 LLM이 생성
         """
         try:
-            logger.info("🤖 에이전틱 HTML 생성 시작")
+            logger.info("🤖 순수 LLM 기반 HTML 생성 시작")
             
-            # 1. 데이터 구조 분석
-            analysis = self._analyze_data_comprehensively(data)
-            logger.info(f"📊 데이터 분석 완료: {analysis['summary']}")
-            
-            # 2. LLM에게 리포트 구조 결정 요청 (선택적)
+            # LLM에게 직접 HTML 생성 요청
             if self.llm_client:
-                report_structure = await self._get_llm_recommendations(analysis, user_query)
-            else:
-                report_structure = self._get_default_structure(analysis)
+                html_content = await self._generate_html_with_llm(data, user_query)
+                if html_content and len(html_content) > 1000:  # 유효한 HTML인지 기본 검증
+                    logger.info("✅ LLM으로 HTML 생성 완료")
+                    return html_content
             
-            # 3. 컴포넌트 조합하여 HTML 생성
-            html_content = self._assemble_html(analysis, report_structure)
-            
-            logger.info("✅ 에이전틱 HTML 생성 완료")
-            return html_content
+            # LLM 실패시 폴백
+            logger.warning("⚠️ LLM HTML 생성 실패 - 폴백 사용")
+            return self._generate_fallback_report(data)
             
         except Exception as e:
-            logger.error(f"❌ 에이전틱 HTML 생성 실패: {e}")
-            # 폴백: 기본 리포트 생성
+            logger.error(f"❌ HTML 생성 실패: {e}")
             return self._generate_fallback_report(data)
     
+    async def _generate_html_with_llm(self, data: Any, user_query: str) -> str:
+        """LLM을 사용하여 완전한 HTML 생성"""
+        
+        # 데이터를 JSON 문자열로 변환
+        if isinstance(data, str):
+            data_str = data
+        else:
+            data_str = json.dumps(data, ensure_ascii=False, indent=2)
+        
+        prompt = f"""다음 부동산 거래 데이터를 분석하여 완전한 HTML 리포트를 생성해주세요.
+
+**데이터:**
+```json
+{data_str}
+```
+
+**사용자 요청:** {user_query}
+
+**요구사항:**
+1. 완전한 HTML 문서를 생성 (DOCTYPE, html, head, body 포함)
+2. Chart.js를 사용한 인터랙티브 차트 포함
+3. 한국어로 작성
+4. 반응형 디자인
+5. 데이터의 핵심 인사이트를 시각화
+6. 색상과 스타일을 아름답게 적용
+
+**차트 종류:**
+- 거래량 통계 (막대 차트)
+- 가격 분포 (히스토그램)
+- 지역별 비교 (파이 차트)
+- 시계열 트렌드 (라인 차트)
+
+완전한 HTML 코드만 반환해주세요. 설명이나 주석은 제외하고 HTML 코드만 출력하세요."""
+
+        try:
+            # LLM 호출
+            response = await self.llm_client.acomplete(prompt)
+            html_content = response.strip()
+            
+            # HTML 태그 확인
+            if '<!DOCTYPE' in html_content and '<html' in html_content:
+                return html_content
+            else:
+                logger.warning("⚠️ LLM 응답이 완전한 HTML이 아님")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ LLM HTML 생성 오류: {e}")
+            return None
+    
     def _analyze_data_comprehensively(self, data: Any) -> Dict[str, Any]:
-        """데이터를 종합적으로 분석"""
+        """데이터를 종합적으로 분석 - MCP 도구 결과 포함"""
         analysis = {
             "data_type": type(data).__name__,
             "summary": {},
@@ -55,21 +99,34 @@ class AgenticHTMLGenerator:
             "categorical_fields": [],
             "time_fields": [],
             "recommendations": {},
-            "processed_data": {}
+            "processed_data": {},
+            "source": "unknown"
         }
         
+        logger.info(f"🔍 데이터 분석 시작: 타입={type(data)}, 크기={len(data) if hasattr(data, '__len__') else 'N/A'}")
+        
         if isinstance(data, list) and len(data) > 0:
-            # 리스트 데이터 분석 (예: 샘플 세일즈 데이터)
+            # 리스트 데이터 분석 (MCP 도구 결과 또는 샘플 데이터)
             analysis.update(self._analyze_list_data(data))
+            analysis["source"] = "mcp_list_data"
         elif isinstance(data, dict):
-            # 딕셔너리 데이터 분석
+            # 딕셔너리 데이터 분석 (MCP 도구 결과)
             analysis.update(self._analyze_dict_data(data))
+            analysis["source"] = "mcp_dict_data"
         else:
-            # 기타 데이터 타입
-            analysis["summary"] = {"type": "unknown", "size": 1}
+            # 기타 데이터 타입 (텍스트, 에러 등)
+            analysis["summary"] = {"type": "fallback", "size": 1, "content": str(data)[:200]}
+            analysis["source"] = "fallback_data"
+        
+        # 데이터 품질 검증
+        if not analysis.get("processed_data"):
+            logger.warning("⚠️ 처리된 데이터가 없음 - 기본 구조 생성")
+            analysis["processed_data"] = {"fallback": True, "data_preview": str(data)[:300]}
         
         # 컴포넌트 권장사항 생성
         analysis["recommendations"] = self.selector.analyze_data_structure(analysis["processed_data"])
+        
+        logger.info(f"📊 데이터 분석 완료: 소스={analysis['source']}, 필드={len(analysis.get('numeric_fields', []))}")
         
         return analysis
     
@@ -143,26 +200,63 @@ class AgenticHTMLGenerator:
         }
     
     def _analyze_dict_data(self, data: Dict) -> Dict[str, Any]:
-        """딕셔너리 형태 데이터 분석"""
+        """딕셔너리 형태 데이터 분석 - MCP 도구 결과 특화"""
         numeric_fields = []
         categorical_fields = []
+        processed_data = {}
         
-        for key, value in data.items():
-            if isinstance(value, (int, float)):
-                numeric_fields.append(key)
-            elif isinstance(value, str):
-                categorical_fields.append(key)
+        logger.info(f"🔍 딕셔너리 데이터 분석: 키={list(data.keys())}")
+        
+        # MCP 도구 결과인지 확인
+        if "data" in data or "results" in data or "items" in data:
+            # MCP 도구 결과 구조 처리
+            actual_data = data.get("data") or data.get("results") or data.get("items") or data
+            
+            if isinstance(actual_data, list) and len(actual_data) > 0:
+                logger.info(f"📋 MCP 리스트 데이터 발견: {len(actual_data)}개 항목")
+                return self._analyze_list_data(actual_data)
+        
+        # 통계 데이터나 집계 결과 처리
+        if any(key in data for key in ['total', 'count', 'sum', 'avg', 'mean', 'max', 'min']):
+            logger.info("📊 통계 데이터 감지")
+            for key, value in data.items():
+                if isinstance(value, (int, float)) and key not in ['error', 'status']:
+                    numeric_fields.append(key)
+                    processed_data[key] = value
+                elif isinstance(value, str) and key not in ['error', 'message']:
+                    categorical_fields.append(key)
+        
+        # 에러 데이터 처리
+        elif "error" in data or "error_data" in data:
+            logger.warning("⚠️ 에러 데이터 감지")
+            processed_data = {
+                "error_message": data.get("error_data") or data.get("error", "알 수 없는 오류"),
+                "raw_data": str(data.get("raw_data", ""))[:300]
+            }
+        
+        # 일반 딕셔너리 데이터
+        else:
+            for key, value in data.items():
+                if isinstance(value, (int, float)):
+                    numeric_fields.append(key)
+                    processed_data[key] = value
+                elif isinstance(value, str):
+                    categorical_fields.append(key)
+                    processed_data[key] = value
+                elif isinstance(value, list):
+                    processed_data[f"{key}_list"] = value[:10]  # 처음 10개만
         
         return {
             "summary": {
-                "type": "dictionary",
+                "type": "mcp_dictionary",
                 "size": len(data),
                 "numeric_fields_count": len(numeric_fields),
-                "categorical_fields_count": len(categorical_fields)
+                "categorical_fields_count": len(categorical_fields),
+                "is_error": "error" in data or "error_data" in data
             },
             "numeric_fields": numeric_fields,
             "categorical_fields": categorical_fields,
-            "processed_data": data
+            "processed_data": processed_data or data
         }
     
     async def _get_llm_recommendations(self, analysis: Dict, user_query: str) -> Dict:

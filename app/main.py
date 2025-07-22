@@ -22,8 +22,8 @@ from contextlib import asynccontextmanager
 from app.orchestrator import UniversalOrchestrator
 from app.streaming_api import create_streaming_endpoints
 
-# 환경 변수 로드
-load_dotenv()
+# 환경 변수 로드 - override=True로 강제 갱신
+load_dotenv(override=True)
 
 # 로깅 설정
 logging.basicConfig(
@@ -162,13 +162,13 @@ async def generate_dynamic_prompts():
             
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions",
                 headers={
                     "Authorization": f"Bearer {openrouter_api_key}",
                     "Content-Type": "application/json"
                 },
                 json={
-                    "model": "anthropic/claude-sonnet-4",
+                    "model": os.getenv("LLM_NAME", "deepseek/deepseek-chat-v3-0324"),
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 800
                 }

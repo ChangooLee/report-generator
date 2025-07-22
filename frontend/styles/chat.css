@@ -1167,4 +1167,94 @@ textarea:focus-visible,
 input:focus-visible {
     outline: 2px solid var(--accent-primary);
     outline-offset: 2px;
+}
+
+/* JSON 결과 스타일링 */
+.tool-result {
+    margin-top: 8px;
+    padding: 12px;
+    background-color: var(--bg-tertiary);
+    border-radius: 8px;
+    border-left: 4px solid var(--accent-primary);
+}
+
+.result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.result-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.copy-json-btn {
+    background: var(--bg-quaternary);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.copy-json-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.json-result {
+    font-family: 'Fira Code', 'Monaco', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    color: var(--text-primary);
+}
+
+.text-result {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+}
+
+/* JSON 문법 하이라이트 */
+.json-string {
+    color: #98d982;  /* 연한 초록 */
+}
+
+.json-number {
+    color: #ff7b72;  /* 연한 빨강 */
+}
+
+.json-keyword {
+    color: #79c0ff;  /* 연한 파랑 */
+    font-weight: bold;
+}
+
+.json-brace,
+.json-bracket {
+    color: #f0f6fc;  /* 흰색 */
+    font-weight: bold;
+}
+
+.json-colon {
+    color: #f0f6fc;  /* 흰색 */
 } 

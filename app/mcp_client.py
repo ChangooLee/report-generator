@@ -19,11 +19,15 @@ class MCPClient:
         # 기본 MCP 서버 설정 (환경 변수로 제어)
         self.mcp_configs = {}
         
-        # 환경 변수가 설정된 경우에만 부동산 서버 활성화
-        if os.getenv("ENABLE_REALESTATE_MCP", "false").lower() == "true":
+        # 기본적으로 부동산 서버 활성화 (환경 변수로 비활성화 가능)
+        if os.getenv("DISABLE_REALESTATE_MCP", "false").lower() != "true":
+            mcp_kr_realestate_path = os.getenv("MCP_KR_REALESTATE_PATH", "../mcp-kr-realestate")
+            mcp_kr_realestate_bin = os.getenv("MCP_KR_REALESTATE_BIN", 
+                os.path.join(mcp_kr_realestate_path, ".venv310/bin/mcp-kr-realestate"))
+            
             self.mcp_configs["kr-realestate"] = {
-                "path": "/Users/lchangoo/Workspace/mcp-kr-realestate",
-                "command": ["/Users/lchangoo/Workspace/mcp-kr-realestate/.venv310/bin/mcp-kr-realestate"],
+                "path": mcp_kr_realestate_path,
+                "command": [mcp_kr_realestate_bin],
                 "description": "한국 부동산 정보 MCP 서버"
             }
         
@@ -383,43 +387,71 @@ class MCPClient:
     async def _send_request(self, process: asyncio.subprocess.Process, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """MCP 서버에 요청을 전송하고 응답을 받습니다."""
         
-        try:
-            # stdin/stdout 확인
-            if process.stdin is None or process.stdout is None:
-                logger.error("프로세스의 stdin 또는 stdout이 None입니다")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # stdin/stdout 확인
+                if process.stdin is None or process.stdout is None:
+                    logger.error("프로세스의 stdin 또는 stdout이 None입니다")
+                    return None
+                
+                # 프로세스 상태 확인
+                if process.returncode is not None:
+                    logger.error(f"프로세스가 종료됨: returncode={process.returncode}")
+                    return None
+                
+                # 요청 직렬화 및 전송
+                request_data = json.dumps(request) + "\n"
+                process.stdin.write(request_data.encode())
+                await process.stdin.drain()
+                
+                # 응답 대기 (타임아웃 30초)
+                response_line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=30.0
+                )
+                
+                if not response_line:
+                    logger.warning(f"빈 응답 수신 (시도 {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)  # 1초 대기 후 재시도
+                        continue
+                    return None
+                
+                # 응답 파싱
+                response_text = response_line.decode().strip()
+                if not response_text:
+                    logger.warning(f"빈 응답 텍스트 (시도 {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+                
+                response = json.loads(response_text)
+                return response
+                
+            except asyncio.TimeoutError:
+                logger.error(f"MCP 서버 응답 시간 초과 (시도 {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2)  # 2초 대기 후 재시도
+                    continue
                 return None
-            
-            # 요청 직렬화 및 전송
-            request_data = json.dumps(request) + "\n"
-            process.stdin.write(request_data.encode())
-            await process.stdin.drain()
-            
-            # 응답 대기 (타임아웃 30초)
-            response_line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=30.0
-            )
-            
-            if not response_line:
+            except json.JSONDecodeError as e:
+                logger.error(f"MCP 응답 파싱 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                logger.error(f"응답 내용: {response_text[:200]}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
                 return None
-            
-            # 응답 파싱
-            response_text = response_line.decode().strip()
-            if not response_text:
+            except Exception as e:
+                logger.error(f"MCP 요청 전송 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1)
+                    continue
                 return None
-            
-            response = json.loads(response_text)
-            return response
-            
-        except asyncio.TimeoutError:
-            logger.error("MCP 서버 응답 시간 초과")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"MCP 응답 파싱 실패: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"MCP 요청 전송 실패: {e}")
-            return None
+        
+        logger.error(f"모든 재시도 실패: {max_retries}회 시도")
+        return None
     
     async def discover_mcp_server(self, server_path: str) -> Dict[str, Any]:
         """MCP 서버의 기능을 탐색합니다."""

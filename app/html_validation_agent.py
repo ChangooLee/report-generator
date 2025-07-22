@@ -176,9 +176,9 @@ class HTMLValidationAgent:
             median_price = avg_price
             highest_price = avg_price * 1.5
             lowest_price = avg_price * 0.5
-                         dong_names = []
-             dong_counts = []
-             dong_avg_prices = []
+            dong_names = []
+            dong_counts = []
+            dong_avg_prices = []
         
         # HTML 템플릿용 변수 정의 (기존 템플릿 호환성)
         if 'overallStatistics' in raw_data:

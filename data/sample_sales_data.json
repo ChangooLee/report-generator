@@ -20,8 +20,8 @@
     "customer_satisfaction": 4.3,
     "return_ratio": 0.11,
     "sales_team_count": 60
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "서울",
     "product_type": "상품A",
@@ -42,8 +42,8 @@
     "customer_satisfaction": 4.1,
     "return_ratio": 0.13,
     "sales_team_count": 32
-  },
-  {
+    },
+    {
     "date": "2024-02",
     "region": "부산",
     "product_type": "상품A",
@@ -64,8 +64,8 @@
     "customer_satisfaction": 4.3,
     "return_ratio": 0.11,
     "sales_team_count": 36
-  },
-  {
+    },
+    {
     "date": "2024-01",
     "region": "대구",
     "product_type": "상품A",
@@ -97,8 +97,8 @@
     "customer_satisfaction": 4.2,
     "return_ratio": 0.12,
     "sales_team_count": 28
-  },
-  {
+    },
+    {
     "date": "2024-01",
     "region": "인천",
     "product_type": "상품A",
@@ -119,8 +119,8 @@
     "customer_satisfaction": 4.0,
     "return_ratio": 0.14,
     "sales_team_count": 23
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "인천",
     "product_type": "상품A",
@@ -152,8 +152,8 @@
     "customer_satisfaction": 4.1,
     "return_ratio": 0.15,
     "sales_team_count": 47
-  },
-  {
+    },
+    {
     "date": "2024-03",
     "region": "서울",
     "product_type": "상품B",
@@ -174,8 +174,8 @@
     "customer_satisfaction": 3.9,
     "return_ratio": 0.17,
     "sales_team_count": 28
-  },
-  {
+    },
+    {
     "date": "2024-02",
     "region": "부산",
     "product_type": "상품B",
@@ -196,8 +196,8 @@
     "customer_satisfaction": 4.1,
     "return_ratio": 0.15,
     "sales_team_count": 32
-  },
-  {
+    },
+    {
     "date": "2024-01",
     "region": "대구",
     "product_type": "상품B",
@@ -229,8 +229,8 @@
     "customer_satisfaction": 4.0,
     "return_ratio": 0.16,
     "sales_team_count": 24
-  },
-  {
+    },
+    {
     "date": "2024-01",
     "region": "인천",
     "product_type": "상품B",
@@ -262,5 +262,5 @@
     "customer_satisfaction": 3.9,
     "return_ratio": 0.17,
     "sales_team_count": 22
-  }
+    }
 ] 
