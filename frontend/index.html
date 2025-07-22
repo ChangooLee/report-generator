@@ -3,12 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Report Generator</title>
+    <title>AI 레포트 에이전트</title>
     <link rel="stylesheet" href="/frontend/styles/chat.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet">
+    
+    <!-- 마크다운 렌더링 라이브러리 - defer로 로딩 순서 보장 -->
+    <script defer src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+    
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
 </head>
@@ -23,8 +30,8 @@
         <div class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="app-title">
-                    <h1>Universal Report Generator</h1>
-                    <span class="version">v3.0</span>
+                    <img src="/static/images/fn_bi_en.png" alt="FN 로고" class="app-logo">
+                    <h1>AI 레포트 에이전트</h1>
                 </div>
                 <button class="sidebar-toggle" id="sidebarToggle" title="사이드바 토글">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -124,22 +131,23 @@
                         <!-- 환영 메시지 -->
                         <div class="welcome-message">
                             <div class="welcome-icon">
-                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-                                </svg>
+                                <img src="/static/images/fn_bi_en.png" alt="FN 로고" class="welcome-logo">
                             </div>
-                            <h2>Universal Report Generator에 오신 것을 환영합니다!</h2>
-                            <p>데이터 분석이나 리포트 생성에 대해 무엇이든 물어보세요.</p>
+                            <h2>AI 레포트 에이전트에 오신 것을 환영합니다!</h2>
+                            <p>부동산 시장 분석과 인사이트 리포트 생성을 도와드립니다.</p>
                             <div class="example-prompts">
-                                                <div class="example-prompt" data-prompt="월별 판매 데이터의 트렌드를 분석해주세요">
-                    📈 월별 트렌드 분석
+                                <div class="example-prompt" data-prompt="강남구 아파트 매매 분석 리포트를 작성해주세요">
+                    🏢 강남구 아파트 매매 분석
                 </div>
-                <div class="example-prompt" data-prompt="지역별 성과 비교 분석 리포트를 만들어주세요">
-                    📊 지역별 성과 분석
-                                </div>
-                                                <div class="example-prompt" data-prompt="최근 3개월 데이터 패턴을 시각화해주세요">
-                    📈 데이터 시각화
-                                </div>
+                <div class="example-prompt" data-prompt="서울시 오피스텔 임대 시장 동향을 분석해주세요">
+                    🏪 오피스텔 임대 시장 분석
+                </div>
+                <div class="example-prompt" data-prompt="화성시 토지 거래 동향 리포트를 만들어주세요">
+                    🌍 토지 거래 동향 분석
+                </div>
+                <div class="example-prompt" data-prompt="강남구 상업업무용 부동산 투자 분석을 해주세요">
+                    💼 상업용 부동산 투자 분석
+                </div>
                             </div>
                         </div>
                     </div>
@@ -149,7 +157,7 @@
                         <div class="input-container">
                             <textarea 
                                 id="messageInput" 
-                                placeholder="데이터 분석이나 리포트 생성에 대해 무엇이든 물어보세요..."
+                                placeholder="부동산 시장 분석이나 투자 인사이트에 대해 물어보세요..."
                                 rows="1"
                             ></textarea>
                             <button id="sendBtn" class="send-btn" disabled title="메시지 전송">
@@ -162,7 +170,7 @@
                             <button id="abortChatBtn" class="abort-btn" style="display: none;" title="분석 중단">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                     <circle cx="12" cy="12" r="10"/>
-                                    <path d="15 9l-6 6m0-6l6 6"/>
+                                    <path d="M15 9l-6 6m0-6l6 6"/>
                                 </svg>
                             </button>
                         </div>
@@ -235,6 +243,6 @@
         </div>
     </div>
 
-    <script src="/frontend/js/chat.js"></script>
+    <script defer src="/frontend/js/chat.js?v=2024072201"></script>
 </body>
 </html> 

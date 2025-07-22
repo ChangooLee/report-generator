@@ -13,9 +13,64 @@ class ChatApplication {
         this.tools = [];
         this.reports = [];
         
+        // 마크다운 렌더러 초기화
+        this.initializeMarkdownRenderer();
+        
         this.initializeElements();
         this.setupEventListeners();
         this.loadInitialData();
+    }
+
+    // 마크다운 렌더러 초기화
+    initializeMarkdownRenderer() {
+        // 라이브러리 로드 대기 (최대 3초)
+        const checkLibraries = () => {
+            if (typeof marked !== 'undefined') {
+                // Marked.js 설정
+                marked.setOptions({
+                    gfm: true,
+                    breaks: true,
+                    highlight: function(code, lang) {
+                        if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+                            try {
+                                return hljs.highlight(code, { language: lang }).value;
+                            } catch (err) {}
+                        }
+                        return code;
+                    }
+                });
+                
+                this.markdownSupported = true;
+                console.log('✅ Marked.js 초기화 완료');
+                return true;
+            }
+            return false;
+        };
+        
+        // 즉시 확인
+        if (!checkLibraries()) {
+            // DOM과 라이브러리 로드 완료 대기
+            const waitForLoad = () => {
+                let attempts = 0;
+                const interval = setInterval(() => {
+                    attempts++;
+                    if (checkLibraries() || attempts >= 50) { // 5초 대기 (100ms × 50)
+                        clearInterval(interval);
+                        if (!this.markdownSupported) {
+                            this.markdownSupported = false;
+                            console.warn('⚠️ Marked.js 라이브러리가 로드되지 않음 - 폴백 사용');
+                        }
+                    }
+                }, 100);
+            };
+            
+            // DOM 로드 완료 후 실행
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', waitForLoad);
+            } else {
+                waitForLoad();
+            }
+        }
     }
 
     // DOM 요소 초기화
@@ -179,14 +234,14 @@ class ChatApplication {
     
     // 긴 프롬프트를 짧은 제목으로 변환
     createShortTitle(prompt) {
-        if (prompt.includes('아파트') || prompt.includes('부동산')) {
-            return '🏠 부동산 분석';
-        } else if (prompt.includes('매출') || prompt.includes('매출')) {
-            return '📈 매출 분석';
-        } else if (prompt.includes('고객') || prompt.includes('만족도')) {
-            return '📊 고객 분석';
-        } else if (prompt.includes('차트') || prompt.includes('시각화')) {
-            return '📊 데이터 시각화';
+        if (prompt.includes('아파트') || prompt.includes('매매')) {
+            return '🏢 아파트 매매 분석';
+        } else if (prompt.includes('오피스텔') || prompt.includes('임대')) {
+            return '🏪 오피스텔 임대 분석';
+        } else if (prompt.includes('토지') || prompt.includes('거래')) {
+            return '🌍 토지 거래 분석';
+        } else if (prompt.includes('상업') || prompt.includes('투자')) {
+            return '💼 상업용 투자 분석';
         } else {
             // 첫 몇 단어만 사용
             const words = prompt.split(' ');
@@ -244,7 +299,7 @@ class ChatApplication {
                 const htmlContent = await htmlResponse.text();
                 
                 // 코드 뷰에 표시
-                this.showCodeView(htmlContent, latestReport.filename);
+                this.updateCode(htmlContent);
                 console.log('🎨 최신 리포트가 코드 뷰에 자동으로 표시됨');
             }
         } catch (error) {
@@ -659,6 +714,10 @@ class ChatApplication {
         `;
 
         this.chatMessages.appendChild(messageDiv);
+        
+        // 코드 블록 하이라이팅 적용
+        this.highlightCodeBlocks(messageDiv);
+        
         this.scrollToBottom();
         
         return messageDiv;
@@ -685,17 +744,20 @@ class ChatApplication {
                         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
                     </svg>
                 </div>
-                <h2>Universal Report Generator에 오신 것을 환영합니다!</h2>
-                <p>데이터 분석이나 리포트 생성에 대해 무엇이든 물어보세요.</p>
+                <h2>AI 레포트 에이전트에 오신 것을 환영합니다!</h2>
+                <p>부동산 시장 분석과 인사이트 리포트 생성을 도와드립니다.</p>
                 <div class="example-prompts">
-                    <div class="example-prompt" data-prompt="강동구 아파트 매매분석 리포트를 작성해주세요">
-                        📊 부동산 분석 리포트
+                    <div class="example-prompt" data-prompt="강남구 아파트 매매 분석 리포트를 작성해주세요">
+                        🏢 강남구 아파트 매매 분석
                     </div>
-                    <div class="example-prompt" data-prompt="최근 3개월 매출 데이터를 시각화해주세요">
-                        📈 매출 데이터 시각화
+                    <div class="example-prompt" data-prompt="서울시 오피스텔 임대 시장 동향을 분석해주세요">
+                        🏪 오피스텔 임대 시장 분석
                     </div>
-                    <div class="example-prompt" data-prompt="고객 만족도 설문조사 결과를 분석해주세요">
-                        📋 설문조사 분석
+                    <div class="example-prompt" data-prompt="화성시 토지 거래 동향 리포트를 만들어주세요">
+                        🌍 토지 거래 동향 분석
+                    </div>
+                    <div class="example-prompt" data-prompt="강남구 상업업무용 부동산 투자 분석을 해주세요">
+                        💼 상업용 부동산 투자 분석
                     </div>
                 </div>
             </div>
@@ -707,18 +769,99 @@ class ChatApplication {
         const textElement = messageElement.querySelector('.message-text');
         if (textElement) {
             textElement.innerHTML = this.formatMessageContent(content);
+            
+            // 코드 블록 하이라이팅 적용
+            this.highlightCodeBlocks(messageElement);
+            
             this.scrollToBottom();
         }
     }
 
-    // 메시지 내용 포맷팅
+    // 메시지 내용 포맷팅 - 완전한 마크다운 지원
     formatMessageContent(content) {
-        // 마크다운 스타일 포맷팅
-        return content
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`(.*?)`/g, '<code>$1</code>')
-            .replace(/\n/g, '<br>');
+        if (!content) return '';
+        
+        // Marked.js가 로드되어 있으면 사용
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            try {
+                // 마크다운을 HTML로 변환
+                const html = marked.parse(content);
+                
+                // XSS 방지를 위한 HTML 정화
+                const cleanHtml = DOMPurify.sanitize(html, {
+                    ALLOWED_TAGS: [
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                        'p', 'br', 'strong', 'em', 'u', 's',
+                        'code', 'pre', 'blockquote',
+                        'ul', 'ol', 'li',
+                        'a', 'img',
+                        'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                        'div', 'span'
+                    ],
+                    ALLOWED_ATTR: [
+                        'href', 'target', 'src', 'alt', 'title',
+                        'class', 'id'
+                    ]
+                });
+                
+                return cleanHtml;
+            } catch (error) {
+                console.warn('마크다운 파싱 오류:', error);
+                // 폴백: 기본 정규식 처리
+                return this.formatMessageContentFallback(content);
+            }
+        } else {
+            // 폴백: 기본 정규식 처리
+            return this.formatMessageContentFallback(content);
+        }
+    }
+
+    // 폴백: 기본 마크다운 처리 (라이브러리가 없을 때) - 개선된 버전
+    formatMessageContentFallback(content) {
+        let processed = content
+            // 헤딩 (순서 중요 - 긴 것부터)
+            .replace(/#### (.*?)(\n|$)/g, '<h4 class="markdown-h4">$1</h4>')
+            .replace(/### (.*?)(\n|$)/g, '<h3 class="markdown-h3">$1</h3>')
+            .replace(/## (.*?)(\n|$)/g, '<h2 class="markdown-h2">$1</h2>')
+            .replace(/# (.*?)(\n|$)/g, '<h1 class="markdown-h1">$1</h1>')
+            // 텍스트 강조
+            .replace(/\*\*(.*?)\*\*/g, '<strong class="markdown-bold">$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em class="markdown-italic">$1</em>')
+            // 코드
+            .replace(/`([^`]+)`/g, '<code class="markdown-code">$1</code>')
+            .replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre class="markdown-pre"><code class="language-$1">$2</code></pre>')
+            // 링크
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="markdown-link">$1</a>')
+            // 리스트 처리
+            .replace(/^[\s]*[-*+] (.+)$/gm, '<li class="markdown-li">$1</li>')
+            .replace(/^[\s]*(\d+)\. (.+)$/gm, '<li class="markdown-li-ordered">$2</li>');
+        
+        // 리스트 래핑 (연속된 li 요소들을 ul/ol로 감싸기)
+        processed = processed
+            .replace(/(<li class="markdown-li">.*?<\/li>)(?:\s*<li class="markdown-li">.*?<\/li>)*/g, (match) => {
+                return '<ul class="markdown-ul">' + match + '</ul>';
+            })
+            .replace(/(<li class="markdown-li-ordered">.*?<\/li>)(?:\s*<li class="markdown-li-ordered">.*?<\/li>)*/g, (match) => {
+                return '<ol class="markdown-ol">' + match + '</ol>';
+            });
+        
+        // 줄바꿈 처리
+        processed = processed.replace(/\n/g, '<br>');
+        
+        return processed;
+    }
+
+    // 코드 하이라이팅 적용
+    highlightCodeBlocks(element) {
+        if (typeof hljs !== 'undefined') {
+            const codeBlocks = element.querySelectorAll('pre code');
+            codeBlocks.forEach(block => {
+                // 이미 하이라이팅된 경우 건너뛰기
+                if (!block.classList.contains('hljs')) {
+                    hljs.highlightElement(block);
+                }
+            });
+        }
     }
 
     // 타이핑 표시기 표시

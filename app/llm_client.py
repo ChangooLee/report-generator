@@ -11,8 +11,9 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 class ModelType(Enum):
-    QWEN_CODER = "qwen-coder"
-    CLAUDE_SONNET = "claude-sonnet"
+    """모델 타입 열거형"""
+    LLM = "llm"
+    QWEN = "qwen"
 
 class OpenRouterClient:
     def __init__(self):
@@ -24,11 +25,11 @@ class OpenRouterClient:
         self.qwen_model = os.getenv('VLLM_MODEL_NAME', 'Qwen/Qwen2.5-Coder-32B-Instruct')
         self.llm_model = os.getenv('LLM_NAME', 'deepseek/deepseek-chat-v3-0324')
         
-        logger.info(f"🔑 OpenRouter API 키 로드: {'✅ 성공' if self.api_key else '❌ 실패'}")
-        logger.info(f"🔑 API 키 앞 10자리: {self.api_key[:10] if self.api_key else 'None'}...")
-        
         if not self.api_key:
-            raise ValueError("VLLM_API_KEY 또는 CLAUDE_API_KEY 환경 변수가 설정되지 않았습니다.")
+            raise ValueError("LLM_API_KEY 또는 VLLM_API_KEY 환경 변수가 설정되지 않았습니다.")
+        
+        logger.info("🔑 OpenRouter API 키 로드: ✅ 성공")
+        logger.info(f"🔑 API 키 앞 10자리: {self.api_key[:10]}...")
         
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -37,7 +38,7 @@ class OpenRouterClient:
             "X-Title": "Report Generator"
         }
         
-    async def generate_code(self, prompt: str, model_type: ModelType = ModelType.QWEN_CODER) -> str:
+    async def generate_code(self, prompt: str, model_type: ModelType = ModelType.QWEN) -> str:
         """코드 생성 (일반 버전)"""
         try:
             full_response = ""
@@ -48,10 +49,10 @@ class OpenRouterClient:
             logger.error(f"코드 생성 실패: {e}")
             return f"코드 생성 중 오류가 발생했습니다: {str(e)}"
     
-    async def generate_code_stream(self, prompt: str, model_type: ModelType = ModelType.QWEN_CODER) -> AsyncIterator[str]:
+    async def generate_code_stream(self, prompt: str, model_type: ModelType = ModelType.QWEN) -> AsyncIterator[str]:
         """코드 생성 (스트리밍 버전)"""
         try:
-            model_name = self.qwen_model if model_type == ModelType.QWEN_CODER else self.llm_model
+            model_name = self.qwen_model if model_type == ModelType.QWEN else self.llm_model
             system_prompt = self._get_system_prompt(model_type)
             
             messages = [
@@ -101,7 +102,7 @@ class OpenRouterClient:
     async def generate_completion(
         self, 
         prompt: str, 
-        model_type: ModelType = ModelType.CLAUDE_SONNET,
+        model_type: ModelType = ModelType.LLM,
         max_tokens: int = 100,
         temperature: float = 0.1
     ) -> str:
@@ -111,7 +112,7 @@ class OpenRouterClient:
         if prompt == "test":
             return "healthy"
         
-        model_name = self.llm_model if model_type == ModelType.CLAUDE_SONNET else self.qwen_model
+        model_name = self.llm_model if model_type == ModelType.LLM else self.qwen_model
         
         payload = {
             "model": model_name,
@@ -147,80 +148,50 @@ class OpenRouterClient:
             logger.error(f"Completion API 요청 실패: {e}")
             return "unhealthy"
     
-    async def analyze_and_fix_code(
-        self, 
-        original_code: str, 
-        error_message: str, 
-        user_query: str
-    ) -> str:
-        """Claude를 사용하여 코드 오류를 분석하고 수정합니다."""
+    async def fix_code_error(self, error_code: str, error_message: str) -> str:
+        """LLM을 사용하여 코드 오류를 분석하고 수정합니다."""
         
         fix_prompt = f"""
-다음 코드에서 오류가 발생했습니다. 오류를 분석하고 수정된 코드를 제공해주세요.
+다음 Python 코드에서 오류가 발생했습니다. 오류를 분석하고 수정된 코드를 제공해주세요.
 
-원본 사용자 요청:
-{user_query}
-
-오류가 발생한 코드:
-{original_code}
+오류 코드:
+```python
+{error_code}
+```
 
 오류 메시지:
 {error_message}
 
-수정 사항:
-1. 오류의 원인을 분석해주세요
-2. 수정된 전체 코드를 제공해주세요
-3. 수정된 부분에 대한 설명을 추가해주세요
-
-수정된 코드는 다음 형식으로 제공해주세요:
-```python
-# 수정된 Python 코드
-```
-
-```html
-<!-- 수정된 HTML 코드 -->
-```
+수정된 완전한 코드를 제공해주세요.
 """
-        
         return await self.generate_code(
             prompt=fix_prompt,
-            model_type=ModelType.CLAUDE_SONNET
+            model_type=ModelType.LLM
         )
     
-    async def enhance_report(
-        self, 
-        basic_report: str, 
-        user_feedback: str
-    ) -> str:
-        """Claude를 사용하여 리포트를 개선합니다."""
+    async def enhance_report(self, current_report: str, enhancement_request: str) -> str:
+        """LLM을 사용하여 리포트를 개선합니다."""
         
         enhance_prompt = f"""
-다음 기본 리포트를 사용자 피드백을 바탕으로 개선해주세요.
+다음 데이터 리포트를 개선해주세요:
 
-기본 리포트:
-{basic_report}
+현재 리포트:
+{current_report}
 
-사용자 피드백:
-{user_feedback}
+개선 요청:
+{enhancement_request}
 
-개선 사항:
-1. 사용자 피드백을 반영한 추가 분석
-2. 더 나은 시각화 방법 제안
-3. 추가적인 인사이트 제공
-4. 개선된 디자인 및 레이아웃
-
-개선된 코드를 제공해주세요.
+개선된 완전한 리포트를 제공해주세요.
 """
-        
         return await self.generate_code(
             prompt=enhance_prompt,
-            model_type=ModelType.CLAUDE_SONNET
+            model_type=ModelType.LLM
         )
     
     def _get_system_prompt(self, model_type: ModelType) -> str:
         """모델 타입에 따른 시스템 프롬프트를 반환합니다."""
         
-        if model_type == ModelType.QWEN_CODER:
+        if model_type == ModelType.QWEN:
             return """
 당신은 데이터 분석 및 웹 리포트 생성 전문가입니다. 
 사용자의 요청에 따라 JSON 데이터를 분석하고, HTML/JavaScript를 사용하여 
@@ -243,7 +214,7 @@ class OpenRouterClient:
 
 생성된 리포트는 `/reports/` 디렉토리에 저장되어야 합니다.
 """
-        else:  # Claude
+        else:  # LLM
             return """
 당신은 코드 분석 및 개선 전문가입니다.
 주어진 코드의 오류를 분석하고, 더 나은 해결책을 제안하며,

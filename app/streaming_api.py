@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 import os
 import glob
+from app.utils.templates import get_latest_report
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +213,17 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                     return
                 
                 # 실제 워크플로우 실행
-                logger.info(f"🔍 orchestrator 타입: {type(orchestrator)}")
-                logger.info(f"🔍 process_query_with_streaming 존재 여부: {hasattr(orchestrator, 'process_query_with_streaming')}")
+                # orchestrator가 함수인 경우 실제 인스턴스 가져오기
+                if callable(orchestrator):
+                    actual_orchestrator = orchestrator()
+                else:
+                    actual_orchestrator = orchestrator
+                    
+                logger.info(f"🔍 orchestrator 타입: {type(actual_orchestrator)}")
+                logger.info(f"🔍 process_query 존재 여부: {hasattr(actual_orchestrator, 'process_query')}")
                 
                 workflow_task = asyncio.create_task(
-                    orchestrator.process_query_with_streaming(request.user_query, session_id, streaming_callback)
+                    actual_orchestrator.process_query(request.user_query, session_id, streaming_callback)
                 )
                 
                 # 스트리밍 메시지 처리 (중단 체크 포함)
@@ -252,7 +259,7 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                         
                         # 🔍 디버깅: 모든 메시지 타입 로깅
                         if message.get("type") == "tool_complete":
-                            logger.info(f"🔍 tool_complete 감지: tool_name={message.get('tool_name')}, result={str(message.get('result', ''))[:100]}...")
+                            logger.info(f"🔍 tool_complete 감지: tool_name={message.get('tool_name')}, result={str(message.get('result', ''))}")
                         
                         # 🔥 리포트 완료 메시지 감지 시 즉시 처리 (수정된 조건)
                         is_report_complete = (
@@ -270,26 +277,27 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                                 report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
                                 
                                 if report_files:
-                                    latest_report = max(report_files, key=os.path.getctime)
-                                    logger.info(f"🎉 즉시 리포트 감지: {latest_report}")
-                                    
-                                    # HTML 파일 읽기
-                                    with open(latest_report, 'r', encoding='utf-8') as f:
-                                        html_content = f.read()
-                                    
-                                    # 즉시 UI로 전송
-                                    yield generate_sse_data("message", {
-                                        "type": "code", 
-                                        "code": html_content,
-                                        "filename": os.path.basename(latest_report)
-                                    })
-                                    
-                                    yield generate_sse_data("message", {
-                                        "type": "report_update",
-                                        "report_path": latest_report
-                                    })
-                                    
-                                    logger.info("🎨 즉시 HTML 코드 및 리포트 업데이트 전송 완료")
+                                    latest_report = get_latest_report(reports_dir)
+                                    if latest_report:  # None 체크 추가
+                                        logger.info(f"🎉 즉시 리포트 감지: {latest_report}")
+                                        
+                                        # HTML 파일 읽기
+                                        with open(latest_report, 'r', encoding='utf-8') as f:
+                                            html_content = f.read()
+                                        
+                                        # 즉시 UI로 전송
+                                        yield generate_sse_data("message", {
+                                            "type": "code", 
+                                            "code": html_content,
+                                            "filename": os.path.basename(latest_report)
+                                        })
+                                        
+                                        yield generate_sse_data("message", {
+                                            "type": "report_update",
+                                            "report_path": latest_report
+                                        })
+                                        
+                                        logger.info("🎨 즉시 HTML 코드 및 리포트 업데이트 전송 완료")
                             except Exception as e:
                                 logger.error(f"❌ 즉시 리포트 처리 실패: {e}")
                         
@@ -322,8 +330,15 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                     logger.info(f"🔍 발견된 리포트 파일 수: {len(report_files)}")
                     
                     if report_files:
-                        # 생성 시간 기준 최신 파일
-                        latest_report = max(report_files, key=os.path.getctime)
+                        # 파일명의 타임스탬프 기준으로 최신 파일 찾기 (더 정확함)
+                        def extract_timestamp(filepath):
+                            filename = os.path.basename(filepath)
+                            # report_1753164168.html에서 1753164168 추출
+                            import re
+                            match = re.search(r'report_(\d+)\.html', filename)
+                            return int(match.group(1)) if match else 0
+                        
+                        latest_report = max(report_files, key=extract_timestamp)
                         logger.info(f"🎉 streaming_api에서 최신 리포트 감지: {latest_report}")
                         
                         # HTML 파일 내용을 코드 뷰에 전송
@@ -354,29 +369,30 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
                     logger.info(f"🔍 발견된 리포트 파일 수: {len(report_files)}")
                     
                     if report_files:
-                        # 생성 시간 기준 최신 파일
-                        latest_report = max(report_files, key=os.path.getctime)
-                        logger.info(f"🎉 최신 리포트 감지: {latest_report}")
-                        
-                        # HTML 파일 내용을 코드 뷰에 전송
-                        with open(latest_report, 'r', encoding='utf-8') as f:
-                            html_content = f.read()
-                        
-                        # 1. HTML 코드 이벤트 전송
-                        yield generate_sse_data("message", {
-                            "type": "code", 
-                            "code": html_content,
-                            "filename": os.path.basename(latest_report)
-                        })
-                        
-                        # 2. 리포트 업데이트 이벤트 전송
-                        yield generate_sse_data("message", {
-                            "type": "report_update",
-                            "report_path": latest_report
-                        })
-                        
-                        logger.info("🎨 HTML 코드 및 리포트 업데이트 이벤트 전송 완료")
-                        
+                        # 파일명의 타임스탬프 기준으로 최신 파일 찾기
+                        latest_report = get_latest_report(reports_dir)
+                        if latest_report:  # None 체크 추가
+                            logger.info(f"🎉 최신 리포트 감지: {latest_report}")
+                            
+                            # HTML 파일 내용을 코드 뷰에 전송
+                            with open(latest_report, 'r', encoding='utf-8') as f:
+                                html_content = f.read()
+                            
+                            # 1. HTML 코드 이벤트 전송
+                            yield generate_sse_data("message", {
+                                "type": "code", 
+                                "code": html_content,
+                                "filename": os.path.basename(latest_report)
+                            })
+                            
+                            # 2. 리포트 업데이트 이벤트 전송
+                            yield generate_sse_data("message", {
+                                "type": "report_update",
+                                "report_path": latest_report
+                            })
+                            
+                            logger.info("🎨 HTML 코드 및 리포트 업데이트 이벤트 전송 완료")
+                            
                 except Exception as e:
                     logger.error(f"❌ 리포트 감지 및 전송 실패: {e}")
                 
@@ -475,9 +491,10 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
         try:
             # 실행 중인 세션이 있다면 종료 플래그 설정
             if session_id in running_sessions:
-                running_sessions[session_id]["abort"] = True
-                user_query = running_sessions[session_id].get("user_query", "알 수 없음")
-                logger.info(f"🛑 세션 {session_id} 강제 종료 요청 (쿼리: {user_query[:50]}...)")
+                session_info = running_sessions[session_id]
+                session_info["abort"] = True  # type: ignore
+                user_query = session_info.get("user_query", "알 수 없음")  # type: ignore
+                logger.info(f"🛑 세션 {session_id} 강제 종료 요청 (쿼리: {str(user_query)[:50]}...)")
                 
                 return {
                     "success": True,
@@ -504,7 +521,7 @@ def create_streaming_endpoints(app: FastAPI, orchestrator):
             sessions.append({
                 "session_id": session_id,
                 "start_time": info["start_time"].isoformat(),
-                "user_query": info["user_query"][:100] + "..." if len(info["user_query"]) > 100 else info["user_query"],
+                "user_query": info["user_query"],
                 "running_duration_seconds": (datetime.now() - info["start_time"]).total_seconds()
             })
         

@@ -1,10 +1,9 @@
 """
 LangGraph Agentic Workflow
-LangGraph 기반 에이전틱 워크플로우 - Claude가 MCP 도구들을 자동 발견하고 선택
+LangGraph 기반 에이전틱 워크플로우 - LLM이 MCP 도구들을 자동 발견하고 선택
 """
 
 import asyncio
-import httpx
 import os
 import logging
 import random
@@ -15,10 +14,6 @@ from typing import List, Dict, Any, Optional, TypedDict, Annotated
 from dataclasses import dataclass
 from datetime import datetime
 import operator
-try:
-    import httpx # Added for OpenRouter API calls
-except ImportError:
-    httpx = None
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode
@@ -44,10 +39,15 @@ class WorkflowState(TypedDict):
     error: Optional[str]
     browser_test_url: Optional[str]
     validation_passed: Optional[bool]
+    force_text_only: Optional[bool]
 
 
 class OpenRouterLLM(BaseChatModel):
-    """OpenRouter를 통한 Claude 사용 - 표준 function calling 지원"""
+    """OpenRouter를 통한 LLM 사용 - 표준 function calling 지원"""
+    
+    # Pydantic 필드 정의
+    tools: List[BaseTool] = []
+    streaming_callback: Optional[Any] = None
     
     class Config:
         arbitrary_types_allowed = True
@@ -58,15 +58,13 @@ class OpenRouterLLM(BaseChatModel):
         from dotenv import load_dotenv
         load_dotenv(override=True)
         object.__setattr__(self, '_client', OpenRouterClient())
-        object.__setattr__(self, 'tools', [])
-        object.__setattr__(self, 'streaming_callback', None)
     
     @property
     def _llm_type(self) -> str:
-        return "openrouter_claude"
+        return "openrouter_llm"
     
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        """Claude function calling을 사용한 응답 생성"""
+        """LLM function calling을 사용한 응답 생성"""
         
         # 중단 체크
         if hasattr(self, 'abort_check') and self.abort_check and self.abort_check():
@@ -76,7 +74,7 @@ class OpenRouterLLM(BaseChatModel):
         # 메시지 변환 (LangChain → OpenRouter)
         openrouter_messages = self._convert_messages(messages)
         
-        # Claude에게 전달할 도구 스키마 생성
+        # LLM에게 전달할 도구 스키마 생성
         tools_schema = self._create_tools_schema() if self.tools else None
         
         # 핵심 디버깅: 도구 스키마 확인
@@ -103,25 +101,35 @@ class OpenRouterLLM(BaseChatModel):
         logger.info(f"🔧 최종 검증된 메시지: {len(validated_messages)}개, 총 길이: {sum(len(str(m.get('content', ''))) for m in validated_messages)}")
         
         # API 요청 구성
+        model_name = os.getenv("LLM_NAME")
+        if not model_name:
+            raise ValueError("LLM_NAME 환경변수가 설정되지 않았습니다")
+            
         payload = {
-            "model": os.getenv("LLM_NAME", "deepseek/deepseek-chat-v3-0324"),
+            "model": model_name,
             "messages": validated_messages,
             "temperature": 0.3,
             "max_tokens": 4000,
             "stream": False
         }
         
-        # 도구가 있으면 function calling 활성화
-        if tools_schema:
+        # 🔥 강제 텍스트 모드 체크 - 도구 스키마 조건부 제거
+        force_text_only = kwargs.get('state', {}).get('force_text_only', False)
+        
+        # 도구가 있고 강제 텍스트 모드가 아닐 때만 function calling 활성화
+        if tools_schema and not force_text_only:
             payload["tools"] = tools_schema
             payload["tool_choice"] = "auto"
+            logger.info(f"🔧 도구 스키마 활성화: {len(tools_schema)}개")
+        else:
+            logger.warning(f"🚫 도구 스키마 비활성화 - 강제 텍스트 모드: {force_text_only}")
         
         logger.info(f"🔧 API 요청 payload - messages: {len(payload['messages'])}, tools: {len(payload.get('tools', []))}")
         logger.info(f"🔑 API 키 상태: {self._client.api_key[:20] if self._client.api_key else 'None'}...")
         for i, msg in enumerate(payload['messages']):
-            logger.info(f"  메시지 {i}: {msg['role']} - {msg['content'][:100]}...")
+            logger.info(f"  메시지 {i}: {msg['role']} - {msg['content']}")
         
-        # 🔥 간단한 동기 HTTP 요청으로 변경
+        # �� 간단한 동기 HTTP 요청으로 변경
         import requests
         
         try:
@@ -132,8 +140,12 @@ class OpenRouterLLM(BaseChatModel):
                 "X-Title": "Report Generator"
             }
             
+            api_base_url = os.getenv("LLM_API_BASE_URL")
+            if not api_base_url:
+                raise ValueError("LLM_API_BASE_URL 환경변수가 설정되지 않았습니다")
+            
             response = requests.post(
-                os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions",
+                api_base_url + "/chat/completions",
                 headers=headers,
                 json=payload,
                 timeout=120
@@ -199,30 +211,21 @@ class OpenRouterLLM(BaseChatModel):
             else:
                 logger.error("❌ OpenRouter 응답에 choices가 없음")
             
-            logger.info(f"✅ Claude 응답 완료: {len(response_content)} 문자, {len(tool_calls)}개 도구 호출")
+            logger.info(f"✅ LLM 응답 완료: {len(response_content)} 문자, {len(tool_calls)}개 도구 호출")
             
-            # 🔥 비동기 콜백을 동기 컨텍스트에서 호출하는 간단한 방법
-            if self.streaming_callback:
+            # 🔥 LLM 응답을 스트리밍으로 전달
+            if self.streaming_callback and response_content:
                 try:
-                    if response_content:
-                        # asyncio.create_task를 사용한 비동기 실행
-                        import asyncio
-                        try:
-                            loop = asyncio.get_event_loop()
-                            if not loop.is_running():
-                                asyncio.run(self.streaming_callback.send_llm_chunk(response_content))
-                                asyncio.run(self.streaming_callback.send_status(f"📝 Claude 응답: {response_content[:200]}"))
-                            else:
-                                # 이미 실행 중인 루프에서는 task 생성
-                                loop.create_task(self.streaming_callback.send_llm_chunk(response_content))
-                                loop.create_task(self.streaming_callback.send_status(f"📝 Claude 응답: {response_content[:200]}"))
-                        except:
-                            # 폴백: 간단한 로깅만
-                            logger.info(f"콜백 전송 스킵: {response_content[:100]}...")
-                    else:
-                        logger.warning("⚠️ Claude 응답 내용이 없음")
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    # 이미 실행 중인 루프에서는 task 생성
+                    loop.create_task(self.streaming_callback.send_llm_chunk(response_content))
+                    loop.create_task(self.streaming_callback.send_status(f"🤖 LLM 분석: {response_content}"))
+                    logger.info(f"✅ LLM 응답 스트리밍 전송: {len(response_content)} 문자")
                 except Exception as e:
-                    logger.error(f"콜백 전송 실패: {e}")
+                    logger.error(f"❌ 스트리밍 콜백 실패: {e}")
+            elif not response_content:
+                logger.warning("⚠️ LLM 응답 내용이 없음 - 도구 호출만 있음")
             
             # AIMessage 생성
             ai_message = AIMessage(content=response_content or "")
@@ -232,7 +235,7 @@ class OpenRouterLLM(BaseChatModel):
             return ChatResult(generations=[ChatGeneration(text=response_content or "", message=ai_message)])
             
         except Exception as e:
-            logger.error(f"Claude function calling 실패: {e}")
+            logger.error(f"LLM function calling 실패: {e}")
             
             # 에러 메시지 생성
             error_content = f"응답 생성 중 오류가 발생했습니다: {str(e)}"
@@ -269,15 +272,15 @@ class OpenRouterLLM(BaseChatModel):
                     "content": content
                 }
                 
-                # tool_calls가 있으면 추가
+                # tool_calls가 있으면 추가 (List로 명시적 타입 설정)
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    assistant_msg["tool_calls"] = []
+                    assistant_msg["tool_calls"] = []  # type: ignore
                     for tc in msg.tool_calls:
                         # arguments를 JSON 문자열로 변환
                         args = tc.get("args", {})
                         args_json = json_module.dumps(args) if isinstance(args, dict) else str(args)
                         
-                        assistant_msg["tool_calls"].append({
+                        assistant_msg["tool_calls"].append({  # type: ignore
                             "id": tc.get("id", f"call_{i}"),
                             "type": "function",
                             "function": {
@@ -308,9 +311,14 @@ class OpenRouterLLM(BaseChatModel):
     
     def _create_tools_schema(self) -> List[Dict]:
         """LangChain 도구들을 OpenAI function calling 스키마로 변환"""
-        tools_schema = []
+        tools_schema: List[Dict[str, Any]] = []
         
-        for tool in self.tools:
+        # tools 속성이 없으면 빈 리스트 반환
+        tools = getattr(self, 'tools', [])
+        if not tools:
+            return tools_schema
+        
+        for tool in tools:
             # 기본 도구 스키마
             tool_schema = {
                 "type": "function",
@@ -328,13 +336,13 @@ class OpenRouterLLM(BaseChatModel):
             # MCP 도구의 경우 추가 파라미터 정보 추출
             if hasattr(tool, 'tool_info') and tool.tool_info:
                 input_schema = tool.tool_info.get('inputSchema', {})
-                if input_schema and 'properties' in input_schema:
-                    tool_schema["function"]["parameters"]["properties"] = input_schema['properties']
-                    tool_schema["function"]["parameters"]["required"] = input_schema.get('required', [])
+                if input_schema and isinstance(input_schema, dict) and 'properties' in input_schema:
+                    tool_schema["function"]["parameters"]["properties"] = input_schema['properties']  # type: ignore
+                    tool_schema["function"]["parameters"]["required"] = input_schema.get('required', [])  # type: ignore
             
             # 특정 도구들에 대한 매개변수 정의
             if tool.name == "get_region_codes":
-                tool_schema["function"]["parameters"] = {
+                tool_schema["function"]["parameters"] = {  # type: ignore
                     "type": "object",
                     "properties": {
                         "region_name": {
@@ -345,7 +353,7 @@ class OpenRouterLLM(BaseChatModel):
                     "required": ["region_name"]
                 }
             elif tool.name == "get_apt_trade_data":
-                tool_schema["function"]["parameters"] = {
+                tool_schema["function"]["parameters"] = {  # type: ignore
                     "type": "object",
                     "properties": {
                         "region_code": {
@@ -360,7 +368,7 @@ class OpenRouterLLM(BaseChatModel):
                     "required": ["region_code", "year_month"]
                 }
             elif tool.name == "analyze_apartment_trade":
-                tool_schema["function"]["parameters"] = {
+                tool_schema["function"]["parameters"] = {  # type: ignore
                     "type": "object",
                     "properties": {
                         "file_path": {
@@ -371,7 +379,7 @@ class OpenRouterLLM(BaseChatModel):
                     "required": ["file_path"]
                 }
             elif tool.name == "html_report":
-                tool_schema["function"]["parameters"] = {
+                tool_schema["function"]["parameters"] = {  # type: ignore
                     "type": "object",
                     "properties": {
                         "analysis_data": {
@@ -421,24 +429,27 @@ class DynamicMCPTool(BaseTool):
     async def _arun(self, **kwargs) -> str:
         """비동기 도구 실행"""
         try:
-            logger.info(f"🔧 MCP 도구 실행 시작: {self.server_name}.{self.name}")
+            logger.info(f"🔧 MCP 도구 실행 시작: {getattr(self, 'server_name', 'unknown')}.{self.name}")
             
-            # MCP 서버가 실행 중이지 않으면 시작
-            server_started = await self.mcp_client.start_mcp_server(self.server_name)
+            # MCP 서버 시작 확인
+            mcp_client = getattr(self, 'mcp_client')
+            server_name = getattr(self, 'server_name', '')
+            
+            server_started = await mcp_client.start_mcp_server(server_name)
             if not server_started:
-                error_msg = f"MCP 서버 '{self.server_name}' 시작 실패"
+                error_msg = f"MCP 서버 '{server_name}' 시작 실패"
                 logger.error(error_msg)
                 return f"❌ {error_msg}"
             
-            # 실제 대기 시간 추가 (MCP 서버 응답 시간 고려)
-            start_time = datetime.now()
+            # 도구 실행 시간 측정
+            start_time = time.time()
             
-            # 도구 호출
-            result = await self.mcp_client.call_tool(self.server_name, self.name, kwargs)
+            # MCP 도구 호출
+            result = await mcp_client.call_tool(server_name, self.name, kwargs)
             
             # 실행 시간 로깅
-            execution_time = (datetime.now() - start_time).total_seconds()
-            logger.info(f"🔧 MCP 도구 '{self.name}' 실행 완료 ({execution_time:.2f}초)")
+            execution_time = (time.time() - start_time) * 1000
+            logger.info(f"🔧 MCP 도구 '{self.name}' 실행 완료 ({execution_time:.2f}ms)")
             
             # 결과 처리
             if isinstance(result, dict):
@@ -560,25 +571,40 @@ class BrowserTestTool(BaseTool):
                     await self.streaming_callback.send_html_code(html_content)
                 
             else:
-                # 🔥 폴백: 샘플 데이터로 LLM HTML 생성 시도
-                logger.info("📊 analysis_data 없음 - 샘플 데이터로 LLM HTML 생성 시도")
+                # 🔥 폴백: LLM이 직접 기본 HTML 생성
+                logger.info("📊 analysis_data 없음 - LLM이 직접 HTML 생성")
                 
-                # 샘플 데이터 로드
-                sample_data_path = os.path.join(os.getcwd(), 'data', 'sample_sales_data.json')
+                # 기본 데이터로 LLM HTML 생성
+                default_data = {
+                    "message": "분석할 데이터가 제공되지 않았습니다.",
+                    "suggestion": "MCP 도구를 통해 실제 데이터를 수집한 후 다시 시도해주세요."
+                }
+                
                 try:
-                    with open(sample_data_path, 'r', encoding='utf-8') as f:
-                        sample_data = json_module.load(f)
-                    
                     # LLM으로 HTML 생성
                     html_content = await self._generate_html_with_llm(
-                        sample_data, 
-                        user_query=kwargs.get('user_query', '샘플 데이터 분석 리포트')
+                        default_data, 
+                        user_query=kwargs.get('user_query', '데이터 수집 필요 안내')
                     )
+                    logger.info("✅ LLM 기본 HTML 생성 완료")
                     
                 except Exception as e:
-                    logger.error(f"샘플 데이터 로드 실패: {e}")
-                    # 최후 폴백: 직접 HTML 생성
-                    html_content = self._generate_emergency_fallback_report()
+                    logger.error(f"LLM HTML 생성 실패: {e}")
+                    # 최소한의 HTML 반환
+                    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HTML 생성 오류</title>
+    <meta charset="utf-8">
+</head>
+<body>
+    <h1>❌ HTML 리포트 생성 실패</h1>
+    <p>오류: {e}</p>
+    <p>시스템을 다시 시도해주세요.</p>
+</body>
+</html>
+"""
             
             # HTML 파일 저장
             try:
@@ -657,53 +683,74 @@ class BrowserTestTool(BaseTool):
             return f"✅ HTML 리포트 테스트가 완료되었습니다 (테스트 제한적)"
     
     async def _generate_html_with_llm(self, data: Any, user_query: str) -> str:
-        """MCP 데이터를 직접 LLM에 전달해서 HTML 생성"""
+        """MCP 데이터를 직접 LLM에 전달해서 HTML 생성 - 스트리밍 지원"""
         try:
             import os
             import httpx
             import json as json_module
             
             # OpenRouterClient에서 API 키 가져오기
-            api_key = self.openrouter_client.api_key
+            openrouter_client = getattr(self, 'openrouter_client', None)
+            if not openrouter_client:
+                # OpenRouterClient 직접 생성
+                from app.llm_client import OpenRouterClient
+                openrouter_client = OpenRouterClient()
+            
+            api_key = openrouter_client.api_key
             if not api_key:
                 logger.error("API 키가 설정되지 않음")
-                return self._generate_emergency_fallback_report()
+                return "❌ LLM API 키가 설정되지 않았습니다."
             
             # 데이터를 JSON 문자열로 변환
             data_json = json_module.dumps(data, ensure_ascii=False, indent=2)
+            logger.info(f"📊 LLM HTML 생성용 데이터 크기: {len(data_json)} 문자")
             
             # LLM에게 HTML 생성 요청
-            prompt = f"""다음 데이터를 사용하여 시각화된 HTML 리포트를 생성해주세요:
+            prompt = f"""다음 실제 MCP 데이터를 사용하여 시각화된 HTML 리포트를 생성해주세요:
 
-데이터:
+**실제 수집된 데이터:**
+```json
 {data_json}
+```
 
-요구사항:
+**요구사항:**
 1. Chart.js를 사용한 인터랙티브 차트 포함
-2. 반응형 디자인
-3. 아름다운 CSS 스타일링
-4. 데이터의 모든 중요한 인사이트 시각화
-5. 완전한 HTML 문서 (<!DOCTYPE html>부터 </html>까지)
+2. 반응형 디자인 및 아름다운 CSS 스타일링
+3. 위 실제 데이터의 모든 중요한 인사이트 시각화
+4. 완전한 HTML 문서 (<!DOCTYPE html>부터 </html>까지)
+5. CDN에서 Chart.js 라이브러리 로드
 
-사용자 요청: {user_query}
+**사용자 요청:** {user_query}
+
+**필수:** 위의 실제 데이터만을 사용하여 정확한 분석과 시각화를 제공하세요!
 
 데이터를 충분히 활용하여 고품질의 시각화 리포트를 생성해주세요."""
 
-            # OpenRouter API 호출
+            # LLM API 호출
+            api_base_url = os.getenv("LLM_API_BASE_URL")
+            if not api_base_url:
+                return "❌ LLM_API_BASE_URL 환경변수가 설정되지 않았습니다"
+            
+            # 🔥 스트리밍 지원 HTTP 클라이언트
             async with httpx.AsyncClient() as client:
+                # 스트리밍 콜백이 있으면 HTML 생성 진행 상황 알림
+                if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                    await self.streaming_callback.send_analysis_step("html_generation", "🎨 실제 데이터를 기반으로 HTML 리포트를 생성하고 있습니다...")
+                
                 response = await client.post(
-                    os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1") + "/chat/completions",
+                    api_base_url + "/chat/completions",
                     headers={
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": os.getenv("LLM_NAME", "deepseek/deepseek-chat-v3-0324"),
+                        "model": os.getenv("LLM_NAME") or "default-model",
                         "messages": [
                             {"role": "user", "content": prompt}
                         ],
                         "max_tokens": 8000,
-                        "temperature": 0.1
+                        "temperature": 0.1,
+                        "stream": False  # 현재는 스트리밍 비활성화
                     },
                     timeout=60.0
                 )
@@ -718,463 +765,121 @@ class BrowserTestTool(BaseTool):
                     elif "```" in html_content:
                         html_content = html_content.split("```")[1].split("```")[0].strip()
                     
-                    logger.info("✅ LLM으로 HTML 생성 완료")
-                    return html_content
+                    logger.info(f"✅ LLM으로 HTML 생성 완료 (길이: {len(html_content)} 문자)")
+                    
+                    # 🔥 HTML 품질 검증 및 개선
+                    validated_html = await self._validate_and_improve_html(html_content, data, user_query)
+                    
+                    # 🔥 생성된 HTML을 즉시 UI에 스트리밍
+                    if hasattr(self, 'streaming_callback') and self.streaming_callback:
+                        await self.streaming_callback.send_code(validated_html, "report.html")
+                        logger.info("🎨 검증된 HTML 코드를 UI로 실시간 스트리밍 완료")
+                    
+                    return validated_html
                 else:
                     logger.error(f"LLM API 호출 실패: {response.status_code}")
-                    return self._generate_emergency_fallback_report()
+                    return f"❌ LLM API 호출 실패 (코드: {response.status_code})"
                     
         except Exception as e:
             logger.error(f"LLM HTML 생성 실패: {e}")
-            return self._generate_emergency_fallback_report()
+            return f"❌ LLM HTML 생성 실패: {e}"
     
-    def _generate_emergency_fallback_report(self) -> str:
-        """최후 폴백: LLM과 데이터 없이 기본 HTML 리포트 생성"""
-        return """<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>폴백 데이터 분석 리포트</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .header { text-align: center; margin-bottom: 40px; }
-        .header h1 { color: #2c3e50; margin-bottom: 10px; }
-        .status { background: #e8f5e8; border: 1px solid #4caf50; padding: 20px; border-radius: 5px; margin: 20px 0; }
-        .info { background: #f0f9ff; border: 1px solid #0ea5e9; padding: 20px; border-radius: 5px; margin: 20px 0; }
-        .chart-container { margin: 30px 0; padding: 20px; background: #fafafa; border-radius: 5px; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 AI 리포트 생성기</h1>
-            <p>폴백 모드로 기본 리포트를 생성했습니다</p>
-        </div>
-        
-        <div class="status">
-            <h3>✅ 시스템 상태</h3>
-            <p><strong>MCP 도구:</strong> 31개 도구 로드 완료</p>
-            <p><strong>부동산 데이터:</strong> 사용 가능</p>
-            <p><strong>HTML 생성:</strong> 정상 작동</p>
-            <p><strong>LLM API:</strong> 인증 문제로 폴백 모드</p>
-        </div>
-        
-        <div class="info">
-            <h3>💡 이용 안내</h3>
-            <p>LLM API 키를 설정하시면 더욱 풍부한 분석 리포트를 생성할 수 있습니다.</p>
-            <p>현재는 MCP 도구를 통해 수집된 데이터로 기본 리포트를 제공합니다.</p>
-        </div>
-        
-        <div class="chart-container">
-            <h3>📈 사용 가능한 MCP 도구들</h3>
-            <ul>
-                <li>🏢 부동산 거래 데이터 (아파트, 오피스텔, 연립, 단독주택)</li>
-                <li>🏦 한국은행 경제 통계 (ECOS API)</li>
-                <li>📊 데이터 분석 및 집계</li>
-                <li>📋 HTML 리포트 생성</li>
-            </ul>
-        </div>
-    </div>
-</body>
-</html>"""
-    
-    def _generate_sample_report(self, data: list) -> str:
-        """샘플 데이터를 사용한 HTML 리포트 생성"""
-        
-        # 월별 매출 데이터 집계
-        monthly_revenue = {}
-        for item in data:
-            month = item['date']
-            if month not in monthly_revenue:
-                monthly_revenue[month] = 0
-            monthly_revenue[month] += item['revenue']
-        
-        # 지역별 데이터 집계  
-        region_data = {}
-        for item in data:
-            region = item['region']
-            if region not in region_data:
-                region_data[region] = 0
-            region_data[region] += item['revenue']
-        
-        # Chart.js 데이터 준비
-        months = list(monthly_revenue.keys())
-        revenues = list(monthly_revenue.values())
-        regions = list(region_data.keys())
-        region_revenues = list(region_data.values())
-        
-        html_template = f'''<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>월별 판매 데이터 분석 리포트</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        body {{ 
-            font-family: 'Arial', sans-serif; 
-            margin: 0; 
-            padding: 20px; 
-            background-color: #f5f5f5; 
-        }}
-        .container {{ 
-            max-width: 1200px; 
-            margin: 0 auto; 
-            background: white; 
-            padding: 30px; 
-            border-radius: 10px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
-        }}
-        h1 {{ 
-            color: #333; 
-            text-align: center; 
-            margin-bottom: 30px; 
-        }}
-        .chart-container {{ 
-            margin: 30px 0; 
-            padding: 20px; 
-            background: #fafafa; 
-            border-radius: 8px; 
-        }}
-        .chart-title {{ 
-            font-size: 18px; 
-            font-weight: bold; 
-            margin-bottom: 15px; 
-            color: #444; 
-        }}
-        canvas {{ 
-            max-height: 400px; 
-        }}
-        .summary {{ 
-            background: #e3f2fd; 
-            padding: 20px; 
-            border-radius: 8px; 
-            margin: 20px 0; 
-        }}
-        .metric {{ 
-            display: inline-block; 
-            margin: 10px 20px; 
-            text-align: center; 
-        }}
-        .metric-value {{ 
-            font-size: 24px; 
-            font-weight: bold; 
-            color: #1976d2; 
-        }}
-        .metric-label {{ 
-            font-size: 14px; 
-            color: #666; 
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>📊 월별 판매 데이터 분석 리포트</h1>
-        
-        <div class="summary">
-            <div class="metric">
-                <div class="metric-value">{len(months)}</div>
-                <div class="metric-label">분석 개월 수</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{len(regions)}</div>
-                <div class="metric-label">지역 수</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{sum(revenues):,}</div>
-                <div class="metric-label">총 매출</div>
-            </div>
-            <div class="metric">
-                <div class="metric-value">{len(data)}</div>
-                <div class="metric-label">데이터 포인트</div>
-            </div>
-        </div>
-        
-        <div class="chart-container">
-            <div class="chart-title">월별 매출 트렌드</div>
-            <canvas id="monthlyChart"></canvas>
-        </div>
-        
-        <div class="chart-container">
-            <div class="chart-title">지역별 매출 분포</div>
-            <canvas id="regionChart"></canvas>
-        </div>
-    </div>
-
-    <script>
-        // 월별 매출 차트
-        const monthlyCtx = document.getElementById('monthlyChart').getContext('2d');
-        new Chart(monthlyCtx, {{
-            type: 'line',
-            data: {{
-                labels: {months},
-                datasets: [{{
-                    label: '월별 매출',
-                    data: {revenues},
-                    borderColor: 'rgb(75, 192, 192)',
-                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                    tension: 0.1,
-                    fill: true
-                }}]
-            }},
-            options: {{
-                responsive: true,
-                plugins: {{
-                    legend: {{
-                        position: 'top',
-                    }},
-                    title: {{
-                        display: true,
-                        text: '월별 매출 변화'
-                    }}
-                }},
-                scales: {{
-                    y: {{
-                        beginAtZero: true,
-                        ticks: {{
-                            callback: function(value) {{
-                                return value.toLocaleString() + '원';
-                            }}
-                        }}
-                    }}
-                }}
-            }}
-        }});
-
-        // 지역별 매출 차트
-        const regionCtx = document.getElementById('regionChart').getContext('2d');
-        new Chart(regionCtx, {{
-            type: 'doughnut',
-            data: {{
-                labels: {regions},
-                datasets: [{{
-                    label: '지역별 매출',
-                    data: {region_revenues},
-                    backgroundColor: [
-                        'rgba(255, 99, 132, 0.8)',
-                        'rgba(54, 162, 235, 0.8)',
-                        'rgba(255, 205, 86, 0.8)',
-                        'rgba(75, 192, 192, 0.8)',
-                        'rgba(153, 102, 255, 0.8)'
-                    ],
-                    borderWidth: 2
-                }}]
-            }},
-            options: {{
-                responsive: true,
-                plugins: {{
-                    legend: {{
-                        position: 'right',
-                    }},
-                    title: {{
-                        display: true,
-                        text: '지역별 매출 비중'
-                    }}
-                }}
-            }}
-        }});
-    </script>
-</body>
-</html>'''
-        
-        return html_template
-    
-    def _create_stats_cards(self, stats: dict) -> str:
-        """전체 통계 카드 생성"""
-        total_count = stats.get('totalTransactionCount', 0)
-        
-        # 평균가격 처리 - 다양한 구조 대응
-        avg_price_raw = stats.get('totalTransactionValue', {})
-        if isinstance(avg_price_raw, dict):
-            avg_price = avg_price_raw.get('mean', avg_price_raw.get('value', 0))
-        else:
-            avg_price = avg_price_raw or 0
-        
-        # 억원 단위로 변환
-        avg_price_billion = avg_price / 100000000 if avg_price > 1000000 else avg_price
-        
-        return f'''
-            <div class="chart-section">
-                <h2>📊 전체 거래 통계</h2>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-value">{total_count:,}건</div>
-                        <div class="stat-label">총 거래 건수</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{avg_price_billion:.1f}억원</div>
-                        <div class="stat-label">평균 거래가격</div>
-                    </div>
-                </div>
-            </div>
-        '''
-    
-    def _create_price_range_chart(self, price_data: dict) -> str:
-        """가격대별 분포 파이 차트"""
-        labels = list(price_data.keys())
-        values = list(price_data.values())
-        
-        return f'''
-            <div class="chart-section">
-                <h2>💰 가격대별 거래 분포</h2>
-                <div class="chart-container">
-                    <canvas id="priceRangeChart"></canvas>
-                </div>
-                <script>
-                    new Chart(document.getElementById('priceRangeChart'), {{
-                        type: 'pie',
-                        data: {{
-                            labels: {json_module.dumps(labels)},
-                            datasets: [{{
-                                data: {json_module.dumps(values)},
-                                backgroundColor: [
-                                    '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'
-                                ]
-                            }}]
-                        }},
-                        options: {{
-                            plugins: {{
-                                legend: {{ position: 'bottom' }}
-                            }}
-                        }}
-                    }});
-                </script>
-            </div>
-        '''
-    
-    def _create_district_chart(self, district_data: dict) -> str:
-        """동별 거래량 바 차트"""
-        districts = list(district_data.keys())
-        
-        # 실제 데이터 구조에 맞게 추출
-        counts = []
-        avg_prices = []
-        
-        for dong in districts:
-            dong_info = district_data[dong]
+    async def _validate_and_improve_html(self, html_content: str, data: Any, user_query: str) -> str:
+        """LLM이 HTML을 검증하고 품질을 개선합니다."""
+        try:
+            import os
+            import httpx
+            import json as json_module
             
-            # 거래 건수 추출
-            count = dong_info.get('transactionCount', dong_info.get('count', 0))
-            counts.append(count)
+            # OpenRouterClient에서 API 키 가져오기
+            openrouter_client = getattr(self, 'openrouter_client', None)
+            if not openrouter_client:
+                from app.llm_client import OpenRouterClient
+                openrouter_client = OpenRouterClient()
             
-            # 평균 가격 추출 (다양한 구조 대응)
-            avg_price_data = dong_info.get('averagePrice', dong_info.get('avgPrice', 0))
-            if isinstance(avg_price_data, dict):
-                avg_price = avg_price_data.get('value', 0)
-            else:
-                avg_price = avg_price_data or 0
+            api_key = openrouter_client.api_key
+            if not api_key:
+                logger.warning("API 키가 없어서 HTML 검증 생략")
+                return html_content
             
-            # 억원 단위로 변환
-            avg_price_billion = avg_price / 100000000 if avg_price > 1000000 else avg_price
-            avg_prices.append(avg_price_billion)
-        
-        return f'''
-            <div class="chart-section">
-                <h2>🏘️ 동별 거래 현황</h2>
-                <div class="chart-container">
-                    <canvas id="districtChart"></canvas>
-                </div>
-                <script>
-                    new Chart(document.getElementById('districtChart'), {{
-                        type: 'bar',
-                        data: {{
-                            labels: {json_module.dumps(districts)},
-                            datasets: [{{
-                                label: '거래 건수',
-                                data: {json_module.dumps(counts)},
-                                backgroundColor: '#667eea',
-                                yAxisID: 'y'
-                            }}, {{
-                                label: '평균 가격 (억원)',
-                                data: {json_module.dumps(avg_prices)},
-                                backgroundColor: '#764ba2',
-                                type: 'line',
-                                yAxisID: 'y1'
-                            }}]
-                        }},
-                        options: {{
-                            scales: {{
-                                y: {{ type: 'linear', position: 'left' }},
-                                y1: {{ type: 'linear', position: 'right', grid: {{ drawOnChartArea: false }} }}
-                            }}
-                        }}
-                    }});
-                </script>
-            </div>
-        '''
-    
-    def _create_area_size_chart(self, area_data: dict) -> str:
-        """평수별 분포 도넛 차트"""
-        labels = list(area_data.keys())
-        values = list(area_data.values())
-        
-        return f'''
-            <div class="chart-section">
-                <h2>📐 평수별 거래 분포</h2>
-                <div class="chart-container">
-                    <canvas id="areaSizeChart"></canvas>
-                </div>
-                <script>
-                    new Chart(document.getElementById('areaSizeChart'), {{
-                        type: 'doughnut',
-                        data: {{
-                            labels: {json_module.dumps(labels)},
-                            datasets: [{{
-                                data: {json_module.dumps(values)},
-                                backgroundColor: [
-                                    '#FF9F43', '#10AC84', '#EE5A52', '#5F27CD', '#00D2D3'
-                                ]
-                            }}]
-                        }},
-                        options: {{
-                            cutout: '50%',
-                            plugins: {{
-                                legend: {{ position: 'right' }}
-                            }}
-                        }}
-                    }});
-                </script>
-            </div>
-        '''
-    
-    def _create_top_apartments_chart(self, apt_data: list) -> str:
-        """주요 카테고리 가로 바 차트"""
-        names = [apt['name'] for apt in apt_data[:5]]  # 상위 5개만
-        counts = [apt['count'] for apt in apt_data[:5]]
-        
-        return f'''
-            <div class="chart-section">
-                <h2>🏢 주요 카테고리 거래량</h2>
-                <div class="chart-container">
-                    <canvas id="topApartmentsChart"></canvas>
-                </div>
-                <script>
-                    new Chart(document.getElementById('topApartmentsChart'), {{
-                        type: 'bar',
-                        data: {{
-                            labels: {json_module.dumps(names)},
-                            datasets: [{{
-                                label: '거래 건수',
-                                data: {json_module.dumps(counts)},
-                                backgroundColor: '#48CAE4',
-                                borderColor: '#0077B6',
-                                borderWidth: 1
-                            }}]
-                        }},
-                        options: {{
-                            indexAxis: 'y',
-                            plugins: {{
-                                legend: {{ display: false }}
-                            }}
-                        }}
-                    }});
-                </script>
-            </div>
-        '''
+            # HTML 검증 및 개선 프롬프트
+            validation_prompt = f"""다음 HTML 리포트를 검증하고 품질을 개선해주세요:
 
+**현재 HTML 코드:**
+```html
+{html_content[:3000]}...
+```
+
+**원본 데이터:**
+```json
+{json_module.dumps(data, ensure_ascii=False, indent=2)[:1000]}...
+```
+
+**사용자 요청:** {user_query}
+
+**검증 및 개선 요구사항:**
+1. **HTML 구조 검증**: DOCTYPE, meta tags, 올바른 태그 닫기
+2. **Chart.js 차트 품질**: 실제 데이터 반영, 색상 일관성, 반응형
+3. **CSS 스타일링**: 아름다운 디자인, 가독성, 반응형 레이아웃
+4. **데이터 정확성**: 실제 수집된 데이터와 일치하는지 확인
+5. **사용자 경험**: 인터랙티브 요소, 명확한 정보 전달
+6. **브라우저 호환성**: 모든 브라우저에서 정상 작동
+
+**반환 형식:**
+- 개선된 완전한 HTML 코드만 반환
+- 설명이나 주석은 제외
+- 반드시 <!DOCTYPE html>부터 </html>까지 포함
+
+개선된 HTML 코드:"""
+
+            # LLM API 호출
+            api_base_url = os.getenv("LLM_API_BASE_URL", "https://openrouter.ai/api/v1")
+            model_name = os.getenv("LLM_MODEL_NAME", "deepseek/deepseek-chat")
+
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:7001",
+                "X-Title": "Report Generator"
+            }
+
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": validation_prompt}],
+                "temperature": 0.3,
+                "max_tokens": 8000
+            }
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(f"{api_base_url}/chat/completions", json=payload, headers=headers)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    improved_html = result["choices"][0]["message"]["content"]
+                    
+                    # HTML 태그 추출
+                    if "```html" in improved_html:
+                        improved_html = improved_html.split("```html")[1].split("```")[0].strip()
+                    elif "```" in improved_html:
+                        improved_html = improved_html.split("```")[1].split("```")[0].strip()
+                    
+                    # 기본 HTML 구조 확인
+                    if '<!DOCTYPE' in improved_html and '<html' in improved_html and '</html>' in improved_html:
+                        logger.info("✅ HTML 검증 및 개선 완료")
+                        return improved_html
+                    else:
+                        logger.warning("⚠️ 개선된 HTML이 완전하지 않음 - 원본 반환")
+                        return html_content
+                else:
+                    logger.warning(f"HTML 검증 API 호출 실패: {response.status_code}")
+                    return html_content
+                    
+        except Exception as e:
+            logger.warning(f"HTML 검증 중 오류 (원본 반환): {e}")
+            return html_content
+    
+
+    
 
 class MCPToolDiscovery:
     """MCP 서버들을 자동으로 발견하고 도구를 등록하는 클래스"""
@@ -1185,7 +890,7 @@ class MCPToolDiscovery:
     async def discover_all_tools(self) -> List[BaseTool]:
         """모든 MCP 서버의 도구들을 발견하여 LangChain 도구로 변환"""
         
-        all_tools = []
+        all_tools: List[BaseTool] = []  # 명시적 타입 어노테이션
         
         # 브라우저 테스트 도구 추가 (내장)
         all_tools.append(BrowserTestTool())
@@ -1207,7 +912,7 @@ class MCPToolDiscovery:
                 # 각 도구를 LangChain 도구로 변환
                 for tool_info in tools_info:
                     dynamic_tool = DynamicMCPTool(server_name, tool_info, self.mcp_client)
-                    all_tools.append(dynamic_tool)
+                    all_tools.append(dynamic_tool)  # type: ignore
                     logger.info(f"✅ 도구 등록: {tool_info['name']} ({server_name})")
                 
             except Exception as e:
@@ -1230,11 +935,11 @@ class MCPToolDiscovery:
 
 
 class TrueAgenticWorkflow:
-    """에이전틱 워크플로우 - Claude가 MCP 도구들을 자동 발견하고 선택"""
+    """에이전틱 워크플로우 - LLM이 MCP 도구들을 자동 발견하고 선택"""
     
     def __init__(self):
         # OpenRouter 기반 LLM 초기화
-        api_key = os.getenv("LLM_API_KEY") or os.getenv("CLAUDE_API_KEY")
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("LLM_API_KEY")
         
         if not api_key:
             logger.warning("⚠️ LLM_API_KEY가 설정되지 않았습니다.")
@@ -1288,7 +993,7 @@ class TrueAgenticWorkflow:
         
         logger.info(f"✅ {len(self.tools)}개 도구와 함께 에이전틱 워크플로우 초기화 완료")
     
-    def _create_workflow(self) -> StateGraph:
+    def _create_workflow(self) -> Any:
         """에이전틱 워크플로우 그래프 생성"""
         
         # 워크플로우 그래프 초기화
@@ -1328,7 +1033,7 @@ class TrueAgenticWorkflow:
             logger.warning("⚠️ 도구 호출이 없는 메시지")
             return {"messages": []}
         
-        tool_messages = []
+        tool_messages: List[ToolMessage] = []
         
         # 🔥 각 도구 호출을 정확하게 매핑하고 실행
         for tool_call in last_message.tool_calls:
@@ -1404,7 +1109,7 @@ class TrueAgenticWorkflow:
         return {"messages": tool_messages}
     
     async def call_model(self, state: WorkflowState) -> Dict[str, Any]:
-        """Claude 모델 호출 - 체계적 분석 및 도구 선택"""
+        """LLM 모델 호출 - 체계적 분석 및 도구 선택"""
         
         messages = state["messages"]
         user_query = state["user_query"]
@@ -1422,15 +1127,10 @@ class TrueAgenticWorkflow:
             import json as json_module
             
             logger.info(f"🔍 JSON 감지 시도 - 전체 쿼리 길이: {len(user_query)}")
-            logger.info(f"🔍 쿼리 내용: {user_query}")
             
             # 개선된 JSON 패턴 - 중첩 가능한 구조 지원
             json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
             json_matches = re.findall(json_pattern, user_query, re.DOTALL)
-            
-            logger.info(f"🔍 JSON 매칭 결과: {len(json_matches)}개 발견")
-            for i, match in enumerate(json_matches):
-                logger.info(f"🔍 매치 {i+1}: {match[:100]}...")
             
             if json_matches:
                 try:
@@ -1442,12 +1142,9 @@ class TrueAgenticWorkflow:
                     # 쿼리에서 JSON 부분 제거
                     clean_query = re.sub(json_pattern, '', user_query, flags=re.DOTALL).strip()
                     logger.info(f"🎯 JSON 데이터 파싱 성공! - 타입: {type(json_data)}")
-                    logger.info(f"🔍 정리된 쿼리: '{clean_query}'")
                 except Exception as e:
                     logger.warning(f"⚠️ JSON 파싱 실패: {e}")
                     json_data = None
-            else:
-                logger.info("🔍 JSON 데이터가 감지되지 않음 - 일반 워크플로우 진행")
             
             # JSON 데이터가 있으면 바로 HTML 생성으로 이동
             if json_data:
@@ -1458,32 +1155,67 @@ class TrueAgenticWorkflow:
 
 **제공된 데이터:**
 ```json
-{json.dumps(json_data, ensure_ascii=False, indent=2)}
+{json_module.dumps(json_data, ensure_ascii=False, indent=2)}
 ```
 
 사용자가 이미 분석할 데이터를 제공했으므로, MCP 도구를 호출하지 말고 직접 이 데이터를 분석하여 html_report 도구로 시각화 리포트를 생성해주세요.
 
 지금 바로 html_report 도구를 호출하여 위 데이터를 analysis_data 매개변수로 전달하세요."""
             else:
-                logger.info("🚀 일반 에이전틱 모드 - LLM이 스스로 도구 선택")
-                # 첫 번째 메시지 - 사용자 쿼리를 그대로 전달하여 LLM이 스스로 판단하도록 함
-                initial_prompt = f"""사용자 요청: "{user_query}"
+                logger.info("🚀 진짜 에이전틱 모드 - 전략 기반 LLM 자율 분석")
+                
+                # 🔥 현재 날짜 추가
+                from datetime import datetime
+                current_date = datetime.now().strftime("%Y년 %m월")
+                current_year_month = datetime.now().strftime("%Y%m")
+                
+                # 🔥 사용 가능한 모든 도구 정보를 LLM에 제공 (에이전틱 전략 수립용)
+                tools_info = []
+                for tool in self.tools:
+                    tool_desc = {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "server": getattr(tool, 'server_name', 'builtin')
+                    }
+                    tools_info.append(tool_desc)
+                
+                tools_summary = "\n".join([
+                    f"- **{tool['name']}** ({tool['server']}): {tool['description']}"
+                    for tool in tools_info
+                ])
+                
+                initial_prompt = f"""**현재 날짜: {current_date} (시스템 날짜: {current_year_month})**
 
-당신은 부동산 데이터 분석 전문가입니다. 사용자의 요청을 분석하여 적절한 도구를 선택하고 활용해주세요.
+**🚫 절대 금지사항:**
+- 실제 도구 결과 없이 추측하거나 가정하지 마세요
+- 파일 경로만 받고 내용을 확인하지 않으면 안됩니다
+- 하드코딩된 날짜나 데이터를 사용하지 마세요
+
+**사용자 요청:** {user_query}
+
+**🎯 에이전틱 분석 전략:**
+
+**1단계: 전략 수립**
+먼저 명확한 분석 전략을 설명하세요:
+- 어떤 데이터가 필요한지
+- 어떤 순서로 도구를 사용할지
+- 어떤 결과를 목표로 하는지
+
+**2단계: 실제 데이터 수집**
+- get_region_codes로 지역 코드 확인
+- get_apt_trade_data로 실제 거래 데이터 수집 (최신 가능한 년월)
+- analyze_apartment_trade로 **실제 데이터 분석**
+
+**3단계: 실제 분석 결과만 사용**
+- 파일 경로만 받으면 반드시 analyze_ 도구 사용
+- 실제 분석 결과만을 기반으로 리포트 작성
 
 **사용 가능한 도구들:**
-- get_region_codes: 지역 코드 조회
-- get_apt_trade_data: 아파트 거래 데이터 수집  
-- analyze_apartment_trade: 부동산 데이터 분석
-- html_report: HTML 리포트 생성
+{tools_summary}
 
-**전략적 접근:**
-1. 사용자 요청을 분석하여 필요한 데이터와 분석 방향을 파악
-2. 가장 적절한 도구를 선택하여 호출
-3. 결과를 바탕으로 다음 단계를 결정
-4. 최종적으로 사용자가 원하는 형태의 답변 제공
-
-지금 사용자의 요청에 가장 적합한 첫 번째 단계를 수행해주세요."""
+**지금 시작하세요:**
+1. 먼저 분석 전략을 명확히 설명하세요
+2. 첫 번째 도구를 호출하여 시작하세요"""
 
             messages = [HumanMessage(content=initial_prompt)]
             logger.info(f"🔍 초기 프롬프트 길이: {len(initial_prompt)}")
@@ -1497,33 +1229,150 @@ class TrueAgenticWorkflow:
             if isinstance(last_message, ToolMessage):
                 content = last_message.content
                 
-                # LLM에게 상황을 전달하고 스스로 판단하도록 함
-                context_prompt = f"""이전 단계 결과:
+                # 🔥 도구 실행 횟수 체크해서 충분한 데이터가 모였으면 HTML 생성
+                tool_message_count = sum(1 for msg in messages if isinstance(msg, ToolMessage))
+                analyze_completed = any('analyze_' in str(msg.content) for msg in messages if isinstance(msg, ToolMessage))
+                
+                logger.info(f"🔍 현재 도구 실행 횟수: {tool_message_count}개, 분석 완료: {analyze_completed}")
+                
+                if analyze_completed and tool_message_count >= 3:  # 분석 완료 + 3개 이상 도구 실행 시 HTML 생성
+                    logger.warning(f"🔥 분석 완료 + 도구 실행 {tool_message_count}개 - HTML 리포트 생성 모드!")
+                    
+                    # 🔥 모든 ToolMessage에서 분석 데이터 수집
+                    collected_analysis_data = []
+                    for msg in messages:
+                        if isinstance(msg, ToolMessage) and msg.content:
+                            try:
+                                # JSON 형태인지 확인 (문자열만 처리)
+                                if isinstance(msg.content, str) and msg.content.strip().startswith('{') and msg.content.strip().endswith('}'):
+                                    import json
+                                    data = json.loads(msg.content)
+                                    collected_analysis_data.append({
+                                        "tool_name": getattr(msg, 'name', 'unknown'),
+                                        "data": data
+                                    })
+                                else:
+                                    collected_analysis_data.append({
+                                        "tool_name": getattr(msg, 'name', 'unknown'), 
+                                        "data": str(msg.content)
+                                    })
+                            except:
+                                collected_analysis_data.append({
+                                    "tool_name": getattr(msg, 'name', 'unknown'),
+                                    "data": str(msg.content)
+                                })
+                    
+                    # 🔥 실제 분석 데이터를 JSON 문자열로 변환
+                    analysis_json = json.dumps(collected_analysis_data, ensure_ascii=False, indent=2)
+                    
+                    context_prompt = f"""이전 단계 결과:
+{content}
+
+**HTML 리포트 생성 단계**
+
+지금까지의 **실제 분석 결과**를 바탕으로 html_report 도구를 호출하여 시각화된 리포트를 생성해주세요.
+
+**사용자 요청:** {user_query}
+
+**수집된 실제 분석 데이터:**
+```json
+{analysis_json}
+```
+
+**필수:**
+- 반드시 html_report 도구를 호출하세요
+- analysis_data 매개변수에 다음 JSON 문자열을 정확히 전달하세요:
+
+```
+{analysis_json}
+```
+
+**호출 예시:**
+```json
+{{
+  "analysis_data": "{analysis_json.replace(chr(10), '\\n').replace('"', '\\"')}"
+}}
+```
+
+지금 바로 html_report 도구를 호출하세요!"""
+                elif tool_message_count >= 5:  # 5개 이상이면 텍스트 분석으로 종료
+                    logger.warning(f"🔥 도구 실행 횟수 {tool_message_count}개 - 강제 텍스트 분석 모드!")
+                    context_prompt = f"""이전 단계 결과:
+{content}
+
+**최종 분석 단계**
+
+사용자의 요청 "{user_query}"에 대해 지금까지 수집한 **실제 데이터**를 바탕으로 상세한 분석 리포트를 작성해주세요.
+
+**필수 포함 내용:**
+1. 📊 실제 데이터 수집 결과 요약
+2. 📈 실제 거래 동향 분석
+3. 💰 실제 가격 분석 및 시장 상황
+4. 🏠 실제 지역별 특성 분석
+5. 💡 투자 시사점 및 전망
+
+**필수:** 실제 수집된 데이터만을 기반으로 분석하세요!"""
+                
+                else:
+                    # 🔥 파일 경로만 받은 경우 강제로 분석 도구 사용 요구
+                    if '/raw_data/' in content and '.json' in content:
+                        context_prompt = f"""이전 단계 결과:
+{content}
+
+**🚨 중요: 파일 경로만 받았습니다! 반드시 analyze_ 도구로 실제 데이터를 분석하세요**
+
+**필수 다음 단계:**
+- analyze_apartment_trade 도구를 사용하여 위 파일의 실제 내용을 분석하세요
+- file_path 매개변수에 위 경로를 전달하세요
+- 실제 분석 결과가 나올 때까지 추측하지 마세요
+
+**절대 금지:** 파일 경로만으로 추측 분석하지 마세요!"""
+                    else:
+                        context_prompt = f"""이전 단계 결과:
 {content}
 
 위 결과를 바탕으로 사용자의 원래 요청 "{user_query}"을 완수하기 위한 다음 단계를 결정해주세요.
 
 **옵션:**
 1. 추가 데이터가 필요하면 적절한 도구를 호출
-2. 분석이 필요하면 analyze_apartment_trade 도구 사용
-3. 시각화가 필요하면 html_report 도구로 리포트 생성
+2. 파일 경로를 받았으면 analyze_ 도구로 실제 분석
+3. 분석 결과가 있으면 html_report 도구로 시각화
 4. 충분한 정보가 있으면 직접 답변 제공
 
-스스로 판단하여 가장 적절한 다음 행동을 수행해주세요."""
+**필수:** 실제 데이터 분석 결과만을 사용하세요!"""
                 
                 messages.append(HumanMessage(content=context_prompt))
         
+        # 🔥 자율적 오류 처리 가이드라인 추가
+        if messages and len(messages) > 2:  # 이미 대화가 진행 중인 경우
+            # 최근 메시지에서 오류 감지
+            recent_content = str(messages[-1].content) if messages else ""
+            has_recent_error = any(keyword in recent_content.lower() for keyword in ["실패", "오류", "❌", "error", "failed"])
+            
+            if has_recent_error:
+                autonomy_guide = HumanMessage(content="""🔥 **자율적 문제 해결 모드**
+
+이전 단계에서 오류가 발생했습니다. 다음 중 하나를 **자율적으로 선택**하여 즉시 실행하세요:
+
+1. **재시도**: 같은 도구를 다른 파라미터로 재시도
+2. **대안 도구**: 다른 도구로 같은 목적 달성
+3. **우회**: 다른 지역/기간 데이터로 분석
+4. **생략**: 해당 단계를 건너뛰고 다음 단계 진행
+
+**반드시 즉시 도구를 호출하세요!** 설명만 하지 말고 바로 행동하세요.""")
+                messages.insert(-1, autonomy_guide)  # 마지막 전에 삽입
+
         # 🔥 LLM 추론 및 도구 선택
         try:
-            logger.info(f"🧠 Claude 호출 - 메시지 수: {len(messages)}")
+            logger.info(f"🧠 LLM 호출 - 메시지 수: {len(messages)}")
             
             # 🔥 LLM 사고 시작 알림
             if hasattr(self, 'streaming_callback') and self.streaming_callback:
-                await self.streaming_callback.send_llm_start("deepseek/deepseek-chat-v3-0324")
+                await self.streaming_callback.send_llm_start(os.getenv("LLM_NAME", "LLM"))
                 await self.streaming_callback.send_analysis_step("llm_thinking", "🧠 AI가 상황을 분석하고 다음 단계를 결정하고 있습니다...")
             
-            # 🔥 LangGraph 호환성을 위해 _generate를 직접 호출하고 AIMessage 추출
-            chat_result = self.llm_with_tools._generate(messages)
+            # 🔥 LangGraph 호환성을 위해 _generate를 직접 호출하고 AIMessage 추출 (state 전달)
+            chat_result = self.llm_with_tools._generate(messages, state=state)
             if chat_result.generations and len(chat_result.generations) > 0:
                 response = chat_result.generations[0].message
             else:
@@ -1531,21 +1380,25 @@ class TrueAgenticWorkflow:
                 response = AIMessage(content="응답 생성에 실패했습니다.")
             
             logger.info(f"🔍 LLM 응답 유형: {type(response)}")
-            logger.info(f"🔍 응답 내용: {getattr(response, 'content', 'No content')[:100]}...")
+            logger.info(f"🔍 응답 내용: {getattr(response, 'content', 'No content')}")
             if hasattr(response, 'tool_calls'):
                 logger.info(f"🔍 도구 호출: {len(response.tool_calls) if response.tool_calls else 0}개")
             
             # 🔥 도구 호출 디버깅 강화 및 진행 상황 표시
             if hasattr(response, 'tool_calls') and response.tool_calls:
                 tool_names = [str(tc.get('name', 'unknown')) if isinstance(tc, dict) else str(tc) for tc in response.tool_calls]
-                logger.info(f"✅ Claude가 {len(response.tool_calls)}개 도구 호출: {tool_names}")
+                logger.info(f"✅ LLM이 {len(response.tool_calls)}개 도구 호출: {tool_names}")
                 
                 # 🔥 도구 선택 결과를 UI에 표시
                 if hasattr(self, 'streaming_callback') and self.streaming_callback:
                     tool_list = ", ".join(tool_names)
                     await self.streaming_callback.send_analysis_step("tool_selection", f"🔧 AI가 다음 도구들을 선택했습니다: {tool_list}")
             else:
-                logger.warning(f"⚠️ Claude가 도구를 호출하지 않음! 응답: {str(response.content)}")
+                logger.warning(f"⚠️ LLM이 도구를 호출하지 않음! 응답: {str(response.content)}")
+                
+                # 🔥 텍스트 분석 완료 후 HTML 생성 자동 트리거 (강화된 로직)
+                # 🔥 HTML 자동 생성 로직 제거 - 무한루프 방지
+                logger.info("🔥 텍스트 응답 완료 - HTML 자동 생성 비활성화")
                 
                 # 🔥 응답 생성 알림
                 if hasattr(self, 'streaming_callback') and self.streaming_callback:
@@ -1559,8 +1412,8 @@ class TrueAgenticWorkflow:
             return {"messages": [response]}
             
         except Exception as e:
-            logger.error(f"Claude 호출 실패: {e}")
-            error_message = AIMessage(content=f"Claude 호출 중 오류가 발생했습니다: {str(e)}")
+            logger.error(f"LLM 호출 실패: {e}")
+            error_message = AIMessage(content=f"LLM 호출 중 오류가 발생했습니다: {str(e)}")
             return {"messages": [error_message]}
     
     def should_continue(self, state: WorkflowState) -> str:
@@ -1574,56 +1427,48 @@ class TrueAgenticWorkflow:
         
         last_message = messages[-1]
         
+        # 응답 내용 분석
+        content = getattr(last_message, 'content', '')
+        
         # 🔥 핵심: 도구 호출이 있으면 항상 계속 진행
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
             logger.info(f"🔄 도구 호출 감지: {len(last_message.tool_calls)}개 - 계속 진행")
             return "continue"
+            
+        # 🔥 자율적 판단: 오류가 있으면 계속 진행, 완성된 응답만 종료
+        if content and len(content) > 50:  # 50자 이상의 텍스트 응답이 있으면
+            # 🎯 오류나 실패 키워드가 있으면 계속 진행 (재시도 허용)
+            error_keywords = ["실패", "오류", "에러", "error", "failed", "❌", "⚠️", "문제"]
+            has_error = any(keyword in content.lower() for keyword in error_keywords)
+            
+            if has_error:
+                logger.info(f"🔄 오류 감지됨 - LLM이 자율적으로 재시도 가능: {content[:100]}...")
+                return "continue"
+            else:
+                logger.info(f"✅ 완성된 응답 감지 ({len(content)}자) - 종료")
+                return "end"
         
-        # 🔥 에이전틱 자율성 보장: 제한을 대폭 완화
-        if len(messages) >= 50:  # 12개에서 50개로 대폭 증가
-            logger.warning("⚠️ 최대 메시지 수 도달 (50개) - 종료")
+        # 🔥 안정성 우선: 메시지 수 제한 강화
+        if len(messages) >= 20:  # 50개에서 20개로 안정성 강화
+            logger.warning("⚠️ 최대 메시지 수 도달 (20개) - 종료")
             return "end"
         
-        # 응답 내용 분석
-        content = getattr(last_message, 'content', '').lower()
-        
-        # 🔥 HTML 리포트 완성 감지 - 더 포괄적인 조건
-        if ('html' in content and (len(content) > 200 or 
-            any(keyword in content.lower() for keyword in ['<!doctype', '<html', '<head', '<body', 'html>', '</html']))):
+        # 🔥 HTML 리포트 완성 감지 - 더 포괄적인 조건 (NoneType 방지)
+        content_lower = content.lower() if content else ""
+        if content_lower and ('html' in content_lower and (len(content) > 200 or 
+            any(keyword in content_lower for keyword in ['<!doctype', '<html', '<head', '<body', 'html>', '</html']))):
             logger.info("✅ HTML 리포트 생성 완료 - 종료")
             return "end"
         
-        # 🔥 분석 완료 후 HTML 생성 지시 조건
-        analysis_complete_keywords = [
-            '분석이 완료', '분석 완료', '분석을 마', '데이터 분석 결과', 
-            '평균 가격', '거래량', '분석 요약', '결론'
-        ]
-        if any(keyword in content for keyword in analysis_complete_keywords):
-            logger.info("✅ 분석 완료 감지 - HTML 리포트 생성 단계로 이동")
-            return "continue"  # HTML 생성을 위해 계속 진행
+        # 🔥 도구 실행 결과만 확인 - 하드코딩 제거
+        # ToolMessage인 경우 항상 계속 진행
+        if isinstance(last_message, ToolMessage):
+            logger.info("🔧 도구 실행 결과 감지 - 계속 진행")
+            return "continue"
         
-        # 🔥 명확한 완료 선언만 인정
-        definitive_completion = [
-            '분석이 완료되었습니다', '리포트가 완성되었습니다', 
-            '모든 단계가 완료되었습니다', '작업을 마무리했습니다'
-        ]
-        if any(phrase in content for phrase in definitive_completion):
-            logger.info("✅ 명확한 완료 선언 감지 - 종료")
-            return "end"
-        
-        # 🔥 API 에러는 복구 시도 - 즉시 종료하지 않음
-        if 'api 호출 중 오류' in content or '400 bad request' in content:
-            logger.warning("⚠️ API 에러 감지하지만 복구 시도를 위해 계속 진행")
-            return "continue"  # 에러 시에도 계속 진행하여 복구 시도
-        
-        # 🔥 에이전틱 사고 과정 보장 - 설명도 허용
-        # Claude가 계획을 세우거나 설명하는 것도 에이전틱 사고의 일부
-        thinking_keywords = [
-            '다음으로', '이제', '그럼', '먼저', '우선', '계획', '단계', 
-            '진행하겠습니다', '분석하겠습니다', '수집하겠습니다'
-        ]
-        if any(keyword in content for keyword in thinking_keywords):
-            logger.info("🧠 Claude 에이전틱 사고 과정 - 계속 진행")
+        # 🔥 에러 발생 시 복구 시도 (NoneType 방지)
+        if content_lower and ('error' in content_lower or 'failed' in content_lower or '오류' in content_lower):
+            logger.warning("⚠️ 에러 감지 - 복구 시도를 위해 계속 진행")
             return "continue"
         
         # 🔥 기본적으로 계속 진행 - 에이전틱 자율성 최대 보장
@@ -1636,7 +1481,7 @@ class TrueAgenticWorkflow:
         # 도구 초기화 (필요시)
         await self.initialize_tools()
         
-        logger.info("🚀 에이전틱 워크플로우 시작 - Claude가 MCP 도구들을 자율적으로 선택")
+        logger.info("🚀 에이전틱 워크플로우 시작 - LLM이 MCP 도구들을 자율적으로 선택")
         
         # 스트리밍 콜백을 도구들에 추가
         await self._wrap_tools_with_streaming(streaming_callback)
@@ -1749,15 +1594,24 @@ class TrueAgenticWorkflow:
                             await streaming_callback.send_tool_abort(tool_name, "사용자 요청으로 중단됨")
                             return "❌ 사용자 요청으로 도구 실행이 중단되었습니다."
                         
-                        # 결과 요약 생성
+                        # 결과 요약 생성 및 오류 감지
                         result_str = str(result)
                         result_summary = result_str  # 길이 제한 제거 - 전체 결과 표시
                         
-                        # 도구 완료 알림
-                        await streaming_callback.send_tool_complete(tool_name, result_summary)
+                        # 🎯 도구 실행 결과에서 오류 감지
+                        error_indicators = ["실패", "오류", "에러", "error", "failed", "❌", "exception", "timeout"]
+                        has_error = any(indicator in result_str.lower() for indicator in error_indicators)
                         
-                        # 🔥 도구 완료 후 다음 단계 안내
-                        await streaming_callback.send_analysis_step("tool_completed", f"✅ {tool_name} 도구 실행이 완료되었습니다. 다음 단계를 진행합니다...")
+                        if has_error:
+                            # 오류 상태로 알림
+                            await streaming_callback.send_tool_complete(tool_name, f"❌ {result_summary}")
+                            await streaming_callback.send_analysis_step("tool_error", f"⚠️ {tool_name} 실행에 문제가 발생했습니다. LLM이 자율적으로 재시도하거나 대안을 선택합니다...")
+                            logger.warning(f"🔄 도구 실행 오류 감지: {tool_name} - {result_str[:200]}...")
+                        else:
+                            # 정상 완료 알림
+                            await streaming_callback.send_tool_complete(tool_name, result_summary)
+                            await streaming_callback.send_analysis_step("tool_completed", f"✅ {tool_name} 도구 실행이 완료되었습니다. 다음 단계를 진행합니다...")
+                            logger.info(f"✅ 도구 정상 완료: {tool_name}")
                         
                         # 🔥 HTML 리포트 생성 완료 감지 - html_report 실행 시 무조건 처리
                         if tool_name == "html_report":
@@ -1770,14 +1624,19 @@ class TrueAgenticWorkflow:
                             reports_dir = os.getenv('REPORTS_PATH', './reports')
                             report_files = glob.glob(os.path.join(reports_dir, "report_*.html"))
                             
-                            # HTML 파일에서 내용 읽어서 코드 뷰에 전송
-                            try:
-                                with open(latest_report, 'r', encoding='utf-8') as f:
-                                    html_content = f.read()
-                                await streaming_callback.send_code(html_content)
-                                logger.info("🎨 HTML 코드를 UI로 전송 완료")
-                            except Exception as read_error:
-                                logger.warning(f"HTML 파일 읽기 실패: {read_error}")
+                            if report_files:
+                                # 가장 최근 파일 선택 (파일명의 타임스탬프 기준)
+                                latest_report = max(report_files, key=os.path.getctime)
+                                logger.info(f"🎉 execute_tools에서 최신 리포트 감지: {latest_report}")
+                                
+                                # HTML 파일에서 내용 읽어서 코드 뷰에 전송
+                                try:
+                                    with open(latest_report, 'r', encoding='utf-8') as f:
+                                        html_content = f.read()
+                                    await streaming_callback.send_code(html_content, filename="report.html")
+                                    logger.info("🎨 execute_tools에서 HTML 코드를 UI로 전송 완료")
+                                except Exception as read_error:
+                                    logger.warning(f"HTML 파일 읽기 실패: {read_error}")
                             else:
                                 logger.warning("🔍 리포트 파일을 찾을 수 없음")
                         
@@ -1830,7 +1689,7 @@ class TrueAgenticWorkflow:
         # 도구 초기화 (필요시)
         await self.initialize_tools()
         
-        logger.info("🚀 에이전틱 워크플로우 시작 - Claude가 MCP 도구들을 자율적으로 선택")
+        logger.info("🚀 에이전틱 워크플로우 시작 - LLM이 MCP 도구들을 자율적으로 선택")
         
         # 초기 상태
         initial_state = {
@@ -1845,8 +1704,8 @@ class TrueAgenticWorkflow:
         }
         
         try:
-            # 🔥 워크플로우 실행 - 에이전틱 자율성 보장 (recursion_limit 증가)
-            config = {"recursion_limit": 100}  # 25에서 100으로 증가
+            # 🔥 워크플로우 실행 - 안정성 우선 (recursion_limit 축소)
+            config = {"recursion_limit": 25}  # 100에서 25로 안정성 우선
             final_state = await self.workflow.ainvoke(initial_state, config=config)
             
             logger.info("✅ 에이전틱 워크플로우 완료")

@@ -84,11 +84,11 @@ class AgenticHTMLGenerator:
                 return html_content
             else:
                 logger.warning("⚠️ LLM 응답이 완전한 HTML이 아님")
-                return None
+                return self._generate_fallback_report(data)
                 
         except Exception as e:
             logger.error(f"❌ LLM HTML 생성 오류: {e}")
-            return None
+            return self._generate_fallback_report(data)
     
     def _analyze_data_comprehensively(self, data: Any) -> Dict[str, Any]:
         """데이터를 종합적으로 분석 - MCP 도구 결과 포함"""
@@ -156,7 +156,7 @@ class AgenticHTMLGenerator:
         # 월별/카테고리별 집계
         if time_fields:
             time_field = time_fields[0]
-            time_aggregation = {}
+            time_aggregation: Dict[str, Dict[str, Any]] = {}
             for item in data:
                 period = item.get(time_field, 'Unknown')
                 if period not in time_aggregation:
@@ -172,7 +172,7 @@ class AgenticHTMLGenerator:
         # 카테고리별 집계
         if categorical_fields:
             cat_field = categorical_fields[0]
-            category_aggregation = {}
+            category_aggregation: Dict[str, Dict[str, Any]] = {}
             for item in data:
                 category = item.get(cat_field, 'Unknown')
                 if category not in category_aggregation:
@@ -229,7 +229,7 @@ class AgenticHTMLGenerator:
         # 에러 데이터 처리
         elif "error" in data or "error_data" in data:
             logger.warning("⚠️ 에러 데이터 감지")
-            processed_data = {
+            processed_data: Dict[str, Any] = {  # type: ignore
                 "error_message": data.get("error_data") or data.get("error", "알 수 없는 오류"),
                 "raw_data": str(data.get("raw_data", ""))[:300]
             }
@@ -239,12 +239,12 @@ class AgenticHTMLGenerator:
             for key, value in data.items():
                 if isinstance(value, (int, float)):
                     numeric_fields.append(key)
-                    processed_data[key] = value
+                    processed_data[key] = value  # type: ignore
                 elif isinstance(value, str):
                     categorical_fields.append(key)
-                    processed_data[key] = value
+                    processed_data[key] = value  # type: ignore
                 elif isinstance(value, list):
-                    processed_data[f"{key}_list"] = value[:10]  # 처음 10개만
+                    processed_data[f"{key}_list"] = value[:10]  # type: ignore
         
         return {
             "summary": {
@@ -289,7 +289,7 @@ class AgenticHTMLGenerator:
                 })
             
             if metrics:
-                structure["components"].append({
+                structure["components"].append({  # type: ignore
                     "type": "metric_cards",
                     "data": metrics
                 })
@@ -301,7 +301,7 @@ class AgenticHTMLGenerator:
                 main_metric = analysis["numeric_fields"][0]
                 values = [time_data[period].get(main_metric, 0) for period in periods]
                 
-                structure["components"].append({
+                structure["components"].append({  # type: ignore
                     "type": "chart",
                     "chart_type": "line",
                     "title": f"📈 {main_metric.replace('_', ' ').title()} 트렌드",
@@ -327,7 +327,7 @@ class AgenticHTMLGenerator:
                 values = [cat_data[cat].get(main_metric, 0) for cat in categories]
                 colors = self.selector.generate_color_palette(len(categories))
                 
-                structure["components"].append({
+                structure["components"].append({  # type: ignore
                     "type": "chart",
                     "chart_type": "doughnut",
                     "title": f"🍩 {main_metric.replace('_', ' ').title()} 분포",
@@ -346,7 +346,7 @@ class AgenticHTMLGenerator:
             # 4. 인사이트 박스
             insights = self._generate_insights(analysis)
             if insights:
-                structure["components"].append({
+                structure["components"].append({  # type: ignore
                     "type": "insights",
                     "data": insights
                 })

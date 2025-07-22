@@ -1,6 +1,6 @@
 """
-Universal Report Generator FastAPI Application
-범용 리포트 생성 FastAPI 애플리케이션 - LangGraph 기반
+AI 레포트 에이전트 FastAPI Application
+부동산 시장 분석 및 인사이트 리포트 생성 - LangGraph 기반
 """
 
 import os
@@ -19,7 +19,7 @@ import json
 import httpx
 from contextlib import asynccontextmanager
 
-from app.orchestrator import UniversalOrchestrator
+from app.orchestrator import RealestateOrchestrator
 from app.streaming_api import create_streaming_endpoints
 
 # 환경 변수 로드 - override=True로 강제 갱신
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 # FastAPI 앱 생성
 app = FastAPI(
-    title="Universal Report Generator",
+    title="AI 레포트 에이전트",
     description="LangGraph 기반 에이전틱 데이터 분석 및 리포트 생성 시스템",
     version="3.0.0",
     docs_url="/docs",
@@ -68,11 +68,18 @@ app.mount("/reports", StaticFiles(directory="reports"), name="reports")
 # 새로운 프론트엔드 정적 파일 제공
 app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
-# 오케스트레이터 초기화
-orchestrator = UniversalOrchestrator()
+# 오케스트레이터 초기화 (lazy initialization)
+orchestrator = None
 
-# 스트리밍 엔드포인트 추가
-create_streaming_endpoints(app, orchestrator)
+def get_orchestrator() -> RealestateOrchestrator:
+    """싱글톤 패턴으로 오케스트레이터 반환"""
+    global orchestrator
+    if orchestrator is None:
+        orchestrator = RealestateOrchestrator()
+    return orchestrator
+
+# 스트리밍 엔드포인트 추가 (lazy initialization 사용)
+create_streaming_endpoints(app, get_orchestrator)
 
 
 # Pydantic 모델들
@@ -108,15 +115,16 @@ async def generate_dynamic_prompts():
     global dynamic_prompts
     try:
         # MCP 도구 정보 수집
-        tools_info = await orchestrator.get_available_tools()
+        tools_info = []  # orchestrator.get_available_tools() 대신 빈 리스트 사용
+        # TODO: orchestrator에 get_available_tools 메서드 구현 필요
         
         if not tools_info:
-            # 실용적인 기본 프롬프트 사용
+            # 부동산 분석 전문 기본 프롬프트 사용
             dynamic_prompts = [
-                "월별 판매 데이터의 트렌드를 분석해주세요",
-                "지역별 성과 비교 분석 리포트를 만들어주세요",
-                "최근 3개월 데이터 패턴을 시각화해주세요",
-                "카테고리별 성장률 변화를 분석해주세요"
+                "강남구 아파트 매매 분석 리포트를 작성해주세요",
+                "서울시 오피스텔 임대 시장 동향을 분석해주세요", 
+                "화성시 토지 거래 동향 리포트를 만들어주세요",
+                "강남구 상업업무용 부동산 투자 분석을 해주세요"
             ]
             return
         
@@ -244,29 +252,19 @@ async def redirect_to_ui():
 
 @app.get("/tools")
 async def get_available_tools():
-    """실제 MCP 도구 목록 제공"""
+    """부동산 MCP 도구 목록 제공"""
     try:
-        # LangGraph 워크플로우에서 도구들 가져오기
-        await orchestrator.langgraph_workflow.initialize_tools()
-        tools = orchestrator.langgraph_workflow.tools
-        
-        tools_data = []
-        for tool in tools:
-            server_name = getattr(tool, 'server_name', 'builtin')
-            tools_data.append({
-                "name": tool.name,
-                "description": tool.description,
-                "server": server_name,
-                "type": "mcp" if server_name != "builtin" else "builtin"
-            })
-        
+        # 부동산 시스템에서 도구들 가져오기
+        tools_data = await get_orchestrator().get_available_tools()
+
         return {
             "success": True,
             "tools": tools_data,
             "total_count": len(tools_data),
-            "servers": list(set(tool["server"] for tool in tools_data))
+                    "servers": ["auto-discovery"],
+        "system_type": "agentic_mcp_workflow"
         }
-        
+
     except Exception as e:
         logger.error(f"도구 목록 조회 실패: {e}")
         return {
@@ -274,43 +272,29 @@ async def get_available_tools():
             "error": str(e),
             "tools": [],
             "total_count": 0,
-            "servers": []
+            "servers": [],
+            "system_type": "agentic_mcp_workflow"
         }
 
-
 @app.get("/health")
-async def health_check() -> HealthResponse:
-    """시스템 상태 확인"""
-    components = {}
-    overall_status = "healthy"
-    
+async def health_check():
+    """에이전틱 시스템 헬스 체크"""
     try:
-        # 오케스트레이터 상태 확인
-        components["orchestrator"] = "healthy"
+        status = await get_orchestrator().health_check()
         
-        # LLM 클라이언트 상태 확인
-        llm_healthy = await orchestrator.llm_client.health_check()
-        components["llm_client"] = "healthy" if llm_healthy else "unhealthy"
-        if not llm_healthy:
-            overall_status = "degraded"
-        
-        # MCP 클라이언트 상태 확인
-        mcp_servers = orchestrator.mcp_client.get_server_status()
-        components["mcp_client"] = "healthy"
-        
-        # LangGraph 워크플로우 상태 확인
-        components["langgraph_workflow"] = "healthy"
+        return {
+            "overall_status": status.get("status", "unknown"),
+            "components": status,
+            "system_type": "agentic_mcp_workflow"
+        }
         
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        overall_status = "unhealthy"
-        components["error"] = str(e)
-    
-    return HealthResponse(
-        overall_status=overall_status,
-        components=components,
-        timestamp=datetime.now().isoformat()
-    )
+        logger.error(f"헬스 체크 실패: {e}")
+        return {
+            "overall_status": "unhealthy",
+            "error": str(e),
+            "system_type": "agentic_mcp_workflow"
+        }
 
 
 @app.get("/reports/{report_filename}")
@@ -369,8 +353,8 @@ async def get_dynamic_prompts():
     """동적으로 생성된 프롬프트 반환"""
     return {"prompts": dynamic_prompts}
 
-# 실행 중인 세션들을 추적
-running_sessions = {}
+# 실행 중인 세션들을 추적하는 딕셔너리
+running_sessions: Dict[str, Dict] = {}
 
 @app.post("/chat/abort")
 async def abort_chat(request: Dict[str, str]):
